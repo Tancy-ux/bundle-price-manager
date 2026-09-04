@@ -11,6 +11,15 @@ const money = n => isNaN(n) || n == null ? "—" : new Intl.NumberFormat(undefin
 const round2 = n => Math.round(n * 100) / 100;
 const uid = () => Math.random().toString(36).slice(2, 9);
 
+// Price-change trail kept on each product/bundle: newest first, and capped so the
+// saved document can't grow without bound.
+const MAX_HISTORY = 50;
+const pushHistory = (item, from, to) => [{
+  at: new Date().toISOString(),
+  from,
+  to
+}, ...(item.history || [])].slice(0, MAX_HISTORY);
+
 // Token search: every word in the query must appear somewhere in the haystack,
 // in any order. So "plate lunar" matches "Lunar Nude Plate", and "lun pla"
 // matches it too (partial words). Punctuation/extra spaces are ignored.
@@ -401,16 +410,10 @@ function Worklist({
     ...b,
     ...patch
   } : b));
-  const stamp = () => new Date().toISOString();
-  const logEntry = (b, newPrice) => ({
-    at: stamp(),
-    from: b.storedPrice || 0,
-    to: newPrice
-  });
   const fixOne = (b, t) => setBundles(bundles.map(x => x.id === b.id ? {
     ...x,
     storedPrice: t,
-    history: [logEntry(x, t), ...(x.history || [])]
+    history: pushHistory(x, x.storedPrice || 0, t)
   } : x));
   const fixAll = () => {
     const m = {};
@@ -418,7 +421,7 @@ function Worklist({
     setBundles(bundles.map(b => m[b.id] != null ? {
       ...b,
       storedPrice: m[b.id],
-      history: [logEntry(b, m[b.id]), ...(b.history || [])]
+      history: pushHistory(b, b.storedPrice || 0, m[b.id])
     } : b));
     flash(`Updated ${Object.keys(m).length} prices`);
   };
@@ -428,16 +431,23 @@ function Worklist({
     flash("Copied to clipboard");
   };
 
-  // flatten history across all bundles, newest first
+  // flatten history across all bundles AND products, newest first
   const history = useMemo(() => {
     const all = [];
     bundles.forEach(b => (b.history || []).forEach(h => all.push({
+      kind: "bundle",
       name: b.name,
       sku: b.sku,
       ...h
     })));
+    (products || []).forEach(p => (p.history || []).forEach(h => all.push({
+      kind: "product",
+      name: p.name,
+      sku: p.sku,
+      ...h
+    })));
     return all.sort((a, b) => b.at.localeCompare(a.at));
-  }, [bundles]);
+  }, [bundles, products]);
   const Tabs = /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -463,7 +473,7 @@ function Worklist({
       color: "var(--muted)",
       fontSize: 14
     }
-  }, "No price changes recorded yet. When you mark a bundle done, it logs here.") : /*#__PURE__*/React.createElement("div", {
+  }, "No price changes recorded yet. Product price edits and bundle price updates both log here.") : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "var(--card)",
       border: "1px solid var(--line)",
@@ -483,7 +493,7 @@ function Worklist({
       fontWeight: 700,
       borderBottom: "1px solid var(--line)"
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Bundle"), /*#__PURE__*/React.createElement("span", null, "When"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, "Item"), /*#__PURE__*/React.createElement("span", null, "When"), /*#__PURE__*/React.createElement("span", {
     style: {
       textAlign: "right"
     }
@@ -506,7 +516,21 @@ function Worklist({
       fontSize: 13.5,
       fontWeight: 500
     }
-  }, h.name), /*#__PURE__*/React.createElement("span", {
+  }, h.name, /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 6,
+      fontSize: 10,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: .4,
+      padding: "1px 6px",
+      borderRadius: 999,
+      verticalAlign: "middle",
+      whiteSpace: "nowrap",
+      color: h.kind === "product" ? "var(--sage)" : "var(--amber)",
+      border: `1px solid ${h.kind === "product" ? "var(--sage)" : "var(--amber)"}`
+    }
+  }, h.kind || "bundle")), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "var(--muted)"
@@ -1041,6 +1065,12 @@ function BundleEditor({
   onSkip
 }) {
   const c = compute(b);
+  // price edits log to history; the old value is captured on focus so typing
+  // doesn't create an entry per keystroke.
+  const liveFocus = useRef(null);
+  const logPatch = (from, to) => ({
+    history: pushHistory(b, from, to)
+  });
   return /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "0 14px 14px",
@@ -1183,9 +1213,21 @@ function BundleEditor({
   }, "Live on Shopify"), /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: b.storedPrice,
+    onFocus: e => {
+      liveFocus.current = parseFloat(e.target.value) || 0;
+    },
     onChange: e => update(b.id, {
       storedPrice: parseFloat(e.target.value) || 0
     }),
+    onBlur: e => {
+      const from = liveFocus.current;
+      liveFocus.current = null;
+      const to = parseFloat(e.target.value) || 0;
+      if (from != null && Math.abs(to - from) > 0.009) update(b.id, {
+        storedPrice: to,
+        ...logPatch(from, to)
+      });
+    },
     style: {
       width: 100,
       padding: "6px 8px",
@@ -1222,7 +1264,8 @@ function BundleEditor({
     }
   }, "✓ In sync (gift price included, ", c.diff < 0 ? "+" : "−", money(Math.abs(c.diff)), " vs item sum)"), !c.missing && c.stale && /*#__PURE__*/React.createElement("button", {
     onClick: () => update(b.id, {
-      storedPrice: c.target
+      storedPrice: c.target,
+      ...logPatch(b.storedPrice || 0, c.target)
     }),
     style: btnFix
   }, "Set live → ", money(c.target)), !c.stale && !c.giftIncluded && !c.skipped && /*#__PURE__*/React.createElement("span", {
@@ -1460,6 +1503,12 @@ function Products({
   const [visible, setVisible] = useState(100);
   const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused
   const [expanded, setExpanded] = useState(null); // product id whose bundle list is open
+  const priceFocus = useRef(null); // {id,value} captured when a price field gains focus
+  // log a product price change on blur, so typing doesn't add an entry per keystroke
+  const logPriceChange = (id, from, to) => setProducts(cur => cur.map(p => p.id === id ? {
+    ...p,
+    history: pushHistory(p, from, to)
+  } : p));
   // map productId -> array of {name, sku} of bundles that use it
   const usage = useMemo(() => {
     const m = {};
@@ -1673,9 +1722,22 @@ function Products({
     }), /*#__PURE__*/React.createElement("input", {
       type: "number",
       value: p.price,
+      onFocus: e => {
+        priceFocus.current = {
+          id: p.id,
+          value: parseFloat(e.target.value) || 0
+        };
+      },
       onChange: e => update(p.id, {
         price: parseFloat(e.target.value) || 0
       }),
+      onBlur: e => {
+        const s = priceFocus.current;
+        priceFocus.current = null;
+        if (!s || s.id !== p.id) return;
+        const to = parseFloat(e.target.value) || 0;
+        if (Math.abs(to - s.value) > 0.009) logPriceChange(p.id, s.value, to);
+      },
       style: {
         border: "1px solid var(--line)",
         borderRadius: 6,

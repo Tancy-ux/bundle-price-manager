@@ -6,6 +6,12 @@ const money = (n)=> isNaN(n)||n==null ? "—"
 const round2 = (n)=> Math.round(n*100)/100;
 const uid = ()=> Math.random().toString(36).slice(2,9);
 
+// Price-change trail kept on each product/bundle: newest first, and capped so the
+// saved document can't grow without bound.
+const MAX_HISTORY = 50;
+const pushHistory = (item,from,to)=>
+  [{at:new Date().toISOString(),from,to},...(item.history||[])].slice(0,MAX_HISTORY);
+
 // Token search: every word in the query must appear somewhere in the haystack,
 // in any order. So "plate lunar" matches "Lunar Nude Plate", and "lun pla"
 // matches it too (partial words). Punctuation/extra spaces are ignored.
@@ -181,25 +187,23 @@ function Worklist({staleList,bundles,setBundles,flash,products,compute,byId,onDe
   const [view,setView]=useState("todo"); // todo | history
   const [openId,setOpenId]=useState(null); // expanded row for inline editing
   const update=(id,patch)=> setBundles(bundles.map(b=>b.id===id?{...b,...patch}:b));
-  const stamp=()=>new Date().toISOString();
-  const logEntry=(b,newPrice)=>({at:stamp(),from:b.storedPrice||0,to:newPrice});
-
   const fixOne=(b,t)=> setBundles(bundles.map(x=>x.id===b.id
-    ? {...x,storedPrice:t,history:[logEntry(x,t),...(x.history||[])]} : x));
+    ? {...x,storedPrice:t,history:pushHistory(x,x.storedPrice||0,t)} : x));
   const fixAll=()=>{ const m={}; staleList.filter(x=>!x.c.missing).forEach(x=>m[x.b.id]=x.c.target);
     setBundles(bundles.map(b=> m[b.id]!=null
-      ? {...b,storedPrice:m[b.id],history:[logEntry(b,m[b.id]),...(b.history||[])]} : b));
+      ? {...b,storedPrice:m[b.id],history:pushHistory(b,b.storedPrice||0,m[b.id])} : b));
     flash(`Updated ${Object.keys(m).length} prices`); };
   const copyAll=()=>{ const rows=staleList.filter(x=>!x.c.missing)
       .map(x=>`${x.b.sku||x.b.name}\t${money(x.c.target)}`).join("\n");
     navigator.clipboard?.writeText("name\tnew_price\n"+rows); flash("Copied to clipboard"); };
 
-  // flatten history across all bundles, newest first
+  // flatten history across all bundles AND products, newest first
   const history = useMemo(()=>{
     const all=[];
-    bundles.forEach(b=>(b.history||[]).forEach(h=>all.push({name:b.name,sku:b.sku,...h})));
+    bundles.forEach(b=>(b.history||[]).forEach(h=>all.push({kind:"bundle",name:b.name,sku:b.sku,...h})));
+    (products||[]).forEach(p=>(p.history||[]).forEach(h=>all.push({kind:"product",name:p.name,sku:p.sku,...h})));
     return all.sort((a,b)=>b.at.localeCompare(a.at));
-  },[bundles]);
+  },[bundles,products]);
 
   const Tabs=(
     <div style={{display:"flex",gap:6,marginBottom:14}}>
@@ -215,16 +219,21 @@ function Worklist({staleList,bundles,setBundles,flash,products,compute,byId,onDe
     <div>
       {Tabs}
       {history.length===0
-        ? <p style={{color:"var(--muted)",fontSize:14}}>No price changes recorded yet. When you mark a bundle done, it logs here.</p>
+        ? <p style={{color:"var(--muted)",fontSize:14}}>No price changes recorded yet. Product price edits and bundle price updates both log here.</p>
         : <div style={{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,overflow:"hidden"}}>
             <div style={{display:"grid",gridTemplateColumns:"1fr 110px 90px 90px",gap:10,padding:"10px 16px",fontSize:11,
               textTransform:"uppercase",letterSpacing:.5,color:"var(--muted)",fontWeight:700,borderBottom:"1px solid var(--line)"}}>
-              <span>Bundle</span><span>When</span><span style={{textAlign:"right"}}>From</span><span style={{textAlign:"right"}}>To</span>
+              <span>Item</span><span>When</span><span style={{textAlign:"right"}}>From</span><span style={{textAlign:"right"}}>To</span>
             </div>
             {history.map((h,i)=>(
               <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 110px 90px 90px",gap:10,padding:"10px 16px",
                 alignItems:"center",borderBottom:"1px solid var(--line)"}}>
-                <span style={{fontSize:13.5,fontWeight:500}}>{h.name}</span>
+                <span style={{fontSize:13.5,fontWeight:500}}>{h.name}
+                  <span style={{marginLeft:6,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,
+                    padding:"1px 6px",borderRadius:999,verticalAlign:"middle",whiteSpace:"nowrap",
+                    color:h.kind==="product"?"var(--sage)":"var(--amber)",
+                    border:`1px solid ${h.kind==="product"?"var(--sage)":"var(--amber)"}`}}>{h.kind||"bundle"}</span>
+                </span>
                 <span style={{fontSize:12,color:"var(--muted)"}}>{new Date(h.at).toLocaleDateString()} {new Date(h.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
                 <span style={{textAlign:"right",fontSize:13,color:"var(--muted)"}}>{money(h.from)}</span>
                 <span style={{textAlign:"right",fontSize:13,fontWeight:700}}>{money(h.to)}</span>
@@ -411,6 +420,10 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
 
 function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}){
   const c=compute(b);
+  // price edits log to history; the old value is captured on focus so typing
+  // doesn't create an entry per keystroke.
+  const liveFocus=useRef(null);
+  const logPatch=(from,to)=>({history:pushHistory(b,from,to)});
   return (
     <div style={{padding:"0 14px 14px",display:"flex",flexDirection:"column",gap:12}}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -443,7 +456,12 @@ function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}
         display:"flex",flexDirection:"column",gap:8}}>
         <div style={vRow}><span style={{color:"var(--muted)"}}>Computed (sum of items)</span><strong>{c.missing?"—":money(c.target)}</strong></div>
         <div style={vRow}><span style={{color:"var(--muted)"}}>Live on Shopify</span>
-          <input type="number" value={b.storedPrice} onChange={e=>update(b.id,{storedPrice:parseFloat(e.target.value)||0})}
+          <input type="number" value={b.storedPrice}
+            onFocus={e=>{liveFocus.current=parseFloat(e.target.value)||0;}}
+            onChange={e=>update(b.id,{storedPrice:parseFloat(e.target.value)||0})}
+            onBlur={e=>{ const from=liveFocus.current; liveFocus.current=null;
+              const to=parseFloat(e.target.value)||0;
+              if(from!=null && Math.abs(to-from)>0.009) update(b.id,{storedPrice:to,...logPatch(from,to)}); }}
             style={{width:100,padding:"6px 8px",borderRadius:6,border:"1px solid var(--line)",fontSize:14,textAlign:"right"}}/></div>
         {!c.missing && c.priceMismatch && (
           <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,cursor:"pointer",
@@ -457,7 +475,7 @@ function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}
         {!c.missing && c.priceMismatch && b.giftIncluded && (
           <span style={{color:"var(--sage)",fontWeight:600,fontSize:13}}>✓ In sync (gift price included, {c.diff<0?"+":"−"}{money(Math.abs(c.diff))} vs item sum)</span>
         )}
-        {!c.missing && c.stale && <button onClick={()=>update(b.id,{storedPrice:c.target})} style={btnFix}>Set live → {money(c.target)}</button>}
+        {!c.missing && c.stale && <button onClick={()=>update(b.id,{storedPrice:c.target,...logPatch(b.storedPrice||0,c.target)})} style={btnFix}>Set live → {money(c.target)}</button>}
         {!c.stale && !c.giftIncluded && !c.skipped && <span style={{color:"var(--sage)",fontWeight:600,fontSize:13}}>✓ In sync</span>}
       </div>
       <label style={{...lbl,marginTop:2}}>Note (optional)
@@ -551,6 +569,10 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
   const [visible,setVisible]=useState(100);
   const [usageFilter,setUsageFilter]=useState("all"); // all | used | unused
   const [expanded,setExpanded]=useState(null); // product id whose bundle list is open
+  const priceFocus=useRef(null); // {id,value} captured when a price field gains focus
+  // log a product price change on blur, so typing doesn't add an entry per keystroke
+  const logPriceChange=(id,from,to)=> setProducts(cur=>cur.map(p=>p.id===id
+    ? {...p,history:pushHistory(p,from,to)} : p));
   // map productId -> array of {name, sku} of bundles that use it
   const usage = useMemo(()=>{ const m={};
     bundles.forEach(b=>b.items.forEach(it=>{ (m[it.productId]=m[it.productId]||[]).push({name:b.name,sku:b.sku}); }));
@@ -621,7 +643,13 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
             <div style={{...prodGrid,padding:"7px 14px",alignItems:"center"}}>
               <input value={p.name} onChange={e=>update(p.id,{name:e.target.value})} style={{border:"none",background:"none",fontSize:14,fontWeight:500,padding:"4px 0"}}/>
               <input value={p.sku} onChange={e=>update(p.id,{sku:e.target.value})} style={{border:"1px solid var(--line)",borderRadius:6,padding:"5px 7px",fontSize:12,color:"var(--muted)"}}/>
-              <input type="number" value={p.price} onChange={e=>update(p.id,{price:parseFloat(e.target.value)||0})}
+              <input type="number" value={p.price}
+                onFocus={e=>{priceFocus.current={id:p.id,value:parseFloat(e.target.value)||0};}}
+                onChange={e=>update(p.id,{price:parseFloat(e.target.value)||0})}
+                onBlur={e=>{ const s=priceFocus.current; priceFocus.current=null;
+                  if(!s||s.id!==p.id) return;
+                  const to=parseFloat(e.target.value)||0;
+                  if(Math.abs(to-s.value)>0.009) logPriceChange(p.id,s.value,to); }}
                 style={{border:"1px solid var(--line)",borderRadius:6,padding:"6px 8px",fontSize:14,textAlign:"right"}}/>
               {used.length>0
                 ? <button onClick={()=>setExpanded(isOpen?null:p.id)}
