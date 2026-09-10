@@ -105,6 +105,78 @@ Backups: the last 20 pre-save versions are kept in the Redis list
 `bundle-manager:backups`. To pull the live data down, open
 `https://<your-app>/api/data` (after logging in) and save the JSON.
 
+## Keeping the catalog in sync with Shopify
+
+New products get added in Shopify over time. To pull those into the live app
+**without disturbing anything else**, use the sync script. It matches on **SKU**
+and only ever *adds* products — it never edits or deletes an existing product,
+and never touches bundles, prices you've changed by hand, or history. (Bundles
+link to products by an internal id, so replacing the product list would break
+every bundle — hence add-only.)
+
+### With a CSV export (no API setup)
+
+1. Shopify admin → **Products → Export → All products → CSV**.
+2. Dry run to see what would change:
+
+   ```
+   npm run sync-store -- path/to/products_export.csv
+   ```
+
+   It lists: new products it would add, SKUs already in the catalog (skipped),
+   draft/archived products (skipped), price differences (reported only, never
+   changed), and catalog SKUs missing from the export.
+3. Happy with it? Add `--apply`:
+
+   ```
+   npm run sync-store -- path/to/products_export.csv --apply
+   ```
+
+   The previous state is backed up to `data/backups/before-sync-*.json` and to
+   the Redis backup list first.
+
+Flags: `--include-draft` also adds draft products (as inactive);
+`--base <file>` merges against a local JSON file instead of live data
+(needs `--force` to `--apply`).
+
+### Straight from the Shopify API
+
+Create a **custom app** in Shopify admin (Settings → Apps and sales channels →
+Develop apps), give it the **`read_products`** Admin API scope, install it, copy
+the Admin API access token. Add to `.env`:
+
+```
+SHOPIFY_STORE=your-store.myshopify.com
+SHOPIFY_ADMIN_TOKEN=shpat_...
+```
+
+Then:
+
+```
+npm run sync-store -- --shopify          # dry run
+npm run sync-store -- --shopify --apply
+```
+
+### Automating it
+
+`.github/workflows/sync-store.yml` runs the check **weekly as a dry run** and
+posts the diff to the workflow summary. To actually add products, open the
+**Actions** tab → *Sync store products* → **Run workflow** with *apply* checked.
+
+Add these repository secrets (Settings → Secrets and variables → Actions):
+`KV_REST_API_URL`, `KV_REST_API_TOKEN` (same as Vercel), `SHOPIFY_STORE`,
+`SHOPIFY_ADMIN_TOKEN`.
+
+Fully unattended auto-apply is possible (add `--apply` to the schedule step) and
+reasonably safe since the script is add-only — but a weekly glance at the report
+catches SKU typos and mis-statused products before they land.
+
+### Other helpers
+
+- `npm run pull` — download the current live catalog to `data/live-<time>.json`
+  and refresh `data/data.json`. A quick manual backup, or a way to see exactly
+  what's live before syncing.
+
 ## Later: connecting to Shopify
 
 This version is deliberately standalone. If you later want it to pull and push

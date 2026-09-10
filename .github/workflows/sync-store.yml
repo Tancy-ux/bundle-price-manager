@@ -1,0 +1,61 @@
+# Weekly: check Shopify for products not yet in the Bundle Price Manager.
+#
+# By default this only REPORTS the diff (nothing is written). To actually add the
+# new products, run it manually from the Actions tab with "apply" set to true.
+#
+# Requires these repository secrets (Settings > Secrets and variables > Actions):
+#   KV_REST_API_URL        \ same values as your Vercel project /
+#   KV_REST_API_TOKEN      / (Upstash REST URL + token)
+#   SHOPIFY_STORE          e.g. your-store.myshopify.com
+#   SHOPIFY_ADMIN_TOKEN    custom app Admin API token, scope: read_products
+
+name: Sync store products
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually add the new products (otherwise dry run)"
+        type: boolean
+        default: false
+      include_draft:
+        description: "Also add draft products (as inactive)"
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci --omit=dev || npm install --omit=dev
+
+      - name: Run sync
+        env:
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+        run: |
+          FLAGS="--shopify"
+          if [ "${{ inputs.apply }}" = "true" ]; then FLAGS="$FLAGS --apply"; fi
+          if [ "${{ inputs.include_draft }}" = "true" ]; then FLAGS="$FLAGS --include-draft"; fi
+          echo "Running: node scripts/sync-store.js $FLAGS"
+          node scripts/sync-store.js $FLAGS | tee sync-output.txt
+
+      - name: Publish report to job summary
+        if: always()
+        run: |
+          {
+            echo '### Shopify sync report'
+            echo '```'
+            cat sync-output.txt 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

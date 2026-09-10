@@ -9,7 +9,9 @@
   "scripts": {
     "start": "node server.js",
     "import": "node import-csv.js",
-    "seed": "node --env-file=.env scripts/seed.js"
+    "seed": "node --env-file=.env scripts/seed.js",
+    "pull": "node --env-file=.env scripts/pull.js",
+    "sync-store": "node --env-file=.env scripts/sync-store.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3",
