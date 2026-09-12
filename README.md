@@ -177,6 +177,41 @@ catches SKU typos and mis-statused products before they land.
   and refresh `data/data.json`. A quick manual backup, or a way to see exactly
   what's live before syncing.
 
+## Seeing which bundles are out of stock
+
+Bundles don't track their own stock — they're only as available as their least
+available component. To see that at a glance, `scripts/fetch-stock.js` pulls
+current inventory from Shopify and matches it onto your catalog by **SKU**
+(same matching rule as the product sync). It only ever updates the `stock`
+field on products that already exist — it never adds/removes products or
+touches bundles, prices, or history.
+
+```
+npm run fetch-stock              dry run — reports what would change
+npm run fetch-stock -- --apply   writes the refreshed stock live
+```
+
+Needs the same `.env` as `--shopify` sync above, plus your custom app's Admin
+API token needs the **`read_inventory`** scope in addition to `read_products`
+(Shopify admin → your app → Configuration → Admin API integration → add scope
+→ Save; you'll be asked to accept the new scope, the token itself doesn't
+change).
+
+Once applied, the app shows:
+- An **Out of stock** tab listing every bundle blocked by a zero-stock
+  component, and which component(s) those are.
+- An `oos` tag on affected bundles in the **Bundles** list, and a red
+  "out of stock" badge on the specific component when you open a bundle.
+- A **Stock** column on the **Products** tab for each product's own count
+  (`—` means Shopify isn't tracking inventory for that item, so it's never
+  flagged as a blocker).
+
+`.github/workflows/fetch-stock.yml` runs this automatically every 4 hours
+(`--apply`, since it only ever touches a stock number — safe to run
+unattended) using the same repository secrets as the product sync workflow.
+Trigger it manually anytime from the **Actions** tab → *Fetch Shopify stock* →
+**Run workflow**.
+
 ## Later: connecting to Shopify
 
 This version is deliberately standalone. If you later want it to pull and push

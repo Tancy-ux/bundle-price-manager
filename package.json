@@ -11,7 +11,8 @@
     "import": "node import-csv.js",
     "seed": "node --env-file=.env scripts/seed.js",
     "pull": "node --env-file=.env scripts/pull.js",
-    "sync-store": "node --env-file=.env scripts/sync-store.js"
+    "sync-store": "node --env-file=.env scripts/sync-store.js",
+    "fetch-stock": "node --env-file=.env scripts/fetch-stock.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3",

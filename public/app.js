@@ -11,6 +11,18 @@ const money = n => isNaN(n) || n == null ? "—" : new Intl.NumberFormat(undefin
 const round2 = n => Math.round(n * 100) / 100;
 const uid = () => Math.random().toString(36).slice(2, 9);
 
+// relative time for the "stock synced" indicator, e.g. "3h ago", "just now"
+function timeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60000) return "just now";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 // Price-change trail kept on each product/bundle: newest first, and capped so the
 // saved document can't grow without bound.
 const MAX_HISTORY = 50;
@@ -184,9 +196,14 @@ function App() {
   function compute(b) {
     let sum = 0,
       missing = false;
+    const oosItems = [];
     b.items.forEach(it => {
       const p = byId[it.productId];
       if (!p || !p.active) missing = true;else sum += p.price * it.qty;
+      if (p && p.stockTracked && (p.stock || 0) <= 0) oosItems.push({
+        product: p,
+        qty: it.qty
+      });
     });
     const target = round2(sum);
     const empty = b.items.length === 0;
@@ -200,6 +217,7 @@ function App() {
     // an empty bundle isn't "stale" — it's just not built yet.
     // a gift-included bundle isn't "stale" on price either — only if an item is missing.
     const stale = !empty && !skipped && (missing || priceMismatch && !giftIncluded);
+    const hasOOS = oosItems.length > 0;
     return {
       target,
       missing,
@@ -208,7 +226,9 @@ function App() {
       giftIncluded,
       skipped,
       priceMismatch,
-      diff: target - (b.storedPrice || 0)
+      diff: target - (b.storedPrice || 0),
+      oosItems,
+      hasOOS
     };
   }
   if (!ready) return /*#__PURE__*/React.createElement("div", {
@@ -223,6 +243,12 @@ function App() {
     b,
     c: compute(b)
   })).filter(x => x.c.stale);
+  const oosList = bundles.map(b => ({
+    b,
+    c: compute(b)
+  })).filter(x => x.c.hasOOS);
+  // freshest stock check across all products, for the "synced" indicator
+  const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   return /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 880,
@@ -282,7 +308,13 @@ function App() {
       marginTop: 2,
       color: saving ? "var(--amber)" : "var(--sage)"
     }
-  }, saving ? "saving…" : "saved to disk ✓"))), /*#__PURE__*/React.createElement("nav", {
+  }, saving ? "saving…" : "saved to disk ✓"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      marginTop: 2,
+      color: "var(--muted)"
+    }
+  }, "stock ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced"))), /*#__PURE__*/React.createElement("nav", {
     style: {
       display: "flex",
       gap: 2,
@@ -290,7 +322,7 @@ function App() {
       borderBottom: "1px solid var(--line)",
       flexWrap: "wrap"
     }
-  }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setTab(k),
     style: {
@@ -300,7 +332,7 @@ function App() {
       fontSize: 13.5,
       fontWeight: 600,
       cursor: "pointer",
-      color: tab === k ? "var(--ink)" : k === "worklist" && staleList.length ? "var(--clay)" : "var(--muted)",
+      color: tab === k ? "var(--ink)" : k === "worklist" && staleList.length || k === "stock" && oosList.length ? "var(--clay)" : "var(--muted)",
       borderBottom: `2px solid ${tab === k ? "var(--clay)" : "transparent"}`,
       marginBottom: -1
     }
@@ -385,6 +417,16 @@ function App() {
     bundles: bundles,
     products: products,
     compute: compute
+  }), tab === "stock" && /*#__PURE__*/React.createElement(StockIssues, {
+    oosList: oosList,
+    bundles: bundles,
+    setBundles: setBundles,
+    byId: byId,
+    products: products,
+    compute: compute,
+    onDelete: deleteBundle,
+    onPromote: promoteToProduct,
+    onSkip: skipBundle
   }), tab === "trash" && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
@@ -987,7 +1029,19 @@ function Bundles({
         fontSize: 14.5,
         fontWeight: 600
       }
-    }, b.name, b.giftIncluded && /*#__PURE__*/React.createElement("span", {
+    }, b.name, c.hasOOS && /*#__PURE__*/React.createElement("span", {
+      title: `Out of stock: ${c.oosItems.map(x => x.product.name).join(", ")}`,
+      style: {
+        marginLeft: 7,
+        fontSize: 11,
+        fontWeight: 700,
+        color: "var(--clay)",
+        border: "1px solid var(--clay)",
+        borderRadius: 999,
+        padding: "1px 7px",
+        verticalAlign: "middle"
+      }
+    }, "oos"), b.giftIncluded && /*#__PURE__*/React.createElement("span", {
       title: "Gift / packaging price included",
       style: {
         marginLeft: 7,
@@ -1135,6 +1189,7 @@ function BundleEditor({
   }, "No items yet — use the bar above to add components fast."), b.items.map((it, idx) => {
     const p = byId[it.productId];
     const broke = !p || !p.active;
+    const oos = p && p.stockTracked && (p.stock || 0) <= 0;
     return /*#__PURE__*/React.createElement("div", {
       key: idx,
       style: {
@@ -1176,7 +1231,28 @@ function BundleEditor({
         fontSize: 14,
         color: broke ? "var(--clay)" : "var(--ink)"
       }
-    }, p ? p.name : "(missing product)", broke && p ? " (inactive)" : ""), /*#__PURE__*/React.createElement("span", {
+    }, p ? p.name : "(missing product)", broke && p ? " (inactive)" : "", oos && /*#__PURE__*/React.createElement("span", {
+      style: {
+        marginLeft: 7,
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: .4,
+        padding: "1px 6px",
+        borderRadius: 999,
+        verticalAlign: "middle",
+        color: "var(--clay)",
+        border: "1px solid var(--clay)"
+      }
+    }, "out of stock")), /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 56,
+        textAlign: "right",
+        fontSize: 12.5,
+        color: p && p.stockTracked ? oos ? "var(--clay)" : "var(--muted)" : "var(--line)"
+      },
+      title: p && p.stockTracked ? `${p.stock} in stock` : "stock not tracked"
+    }, p && p.stockTracked ? p.stock : "—"), /*#__PURE__*/React.createElement("span", {
       style: {
         width: 78,
         textAlign: "right",
@@ -1674,6 +1750,10 @@ function Products({
     }
   }, "Price"), /*#__PURE__*/React.createElement("span", {
     style: {
+      textAlign: "right"
+    }
+  }, "Stock"), /*#__PURE__*/React.createElement("span", {
+    style: {
       textAlign: "center"
     }
   }, "In bundles"), /*#__PURE__*/React.createElement("span", {
@@ -1745,7 +1825,21 @@ function Products({
         fontSize: 14,
         textAlign: "right"
       }
-    }), used.length > 0 ? /*#__PURE__*/React.createElement("button", {
+    }), p.stockTracked ? /*#__PURE__*/React.createElement("span", {
+      style: {
+        textAlign: "right",
+        fontSize: 13,
+        fontWeight: p.stock <= 0 ? 700 : 400,
+        color: p.stock <= 0 ? "var(--clay)" : "var(--ink)"
+      }
+    }, p.stock, p.stock <= 0 ? " oos" : "") : /*#__PURE__*/React.createElement("span", {
+      style: {
+        textAlign: "right",
+        fontSize: 13,
+        color: "var(--line)"
+      },
+      title: "Stock not tracked in Shopify"
+    }, "—"), used.length > 0 ? /*#__PURE__*/React.createElement("button", {
       onClick: () => setExpanded(isOpen ? null : p.id),
       title: "Show which bundles use this",
       style: {
@@ -1812,7 +1906,6 @@ function Products({
   }, "Load more (", filtered.length - shown.length, " more)")));
 }
 
-// shared inline styles
 // "In bundles" — search a product, see every bundle that uses it.
 // Groups results by matching product; a product with no bundles is left out.
 function WhereUsed({
@@ -1958,6 +2051,132 @@ function WhereUsed({
     }, c.empty ? "—" : money(c.target)));
   })))));
 }
+
+// "Out of stock" — every bundle that can't be fulfilled right now because at
+// least one of its components has zero tracked stock in Shopify, and exactly
+// which component(s) those are. Fed by the stock the fetch-stock script pulls in.
+function StockIssues({
+  oosList,
+  bundles,
+  setBundles,
+  byId,
+  products,
+  compute,
+  onDelete,
+  onPromote,
+  onSkip
+}) {
+  const [openId, setOpenId] = useState(null);
+  const update = (id, patch) => setBundles(bundles.map(b => b.id === id ? {
+    ...b,
+    ...patch
+  } : b));
+  if (!oosList.length) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "60px 20px",
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 52,
+      height: 52,
+      borderRadius: 999,
+      background: "var(--sageDim)",
+      color: "var(--sage)",
+      display: "grid",
+      placeItems: "center",
+      fontSize: 26,
+      margin: "0 auto 14px"
+    }
+  }, "✓"), /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      margin: "0 0 6px"
+    }
+  }, "Nothing out of stock"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: "var(--muted)",
+      maxWidth: 420,
+      margin: "0 auto",
+      lineHeight: 1.5
+    }
+  }, "Every bundle's components have stock, as of the last sync. Run ", /*#__PURE__*/React.createElement("code", null, "npm run fetch-stock"), " (or wait for the scheduled check) to refresh."));
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: note
+  }, oosList.length, " bundle", oosList.length > 1 ? "s" : "", " blocked by an out-of-stock component."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 6
+    }
+  }, oosList.map(({
+    b,
+    c
+  }) => {
+    const open = openId === b.id;
+    return /*#__PURE__*/React.createElement("div", {
+      key: b.id,
+      style: {
+        background: "var(--card)",
+        border: "1px solid var(--clay)",
+        borderLeft: "3px solid var(--clay)",
+        borderRadius: 10,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setOpenId(open ? null : b.id),
+      style: {
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "11px 14px",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        textAlign: "left"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        fontSize: 14.5,
+        fontWeight: 600
+      }
+    }, b.name, b.sku && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--muted)",
+        marginLeft: 6
+      }
+    }, b.sku)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        color: "var(--clay)",
+        fontWeight: 600
+      }
+    }, c.oosItems.map(x => x.product.name).join(", ")), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "var(--muted)",
+        fontSize: 12
+      }
+    }, open ? "▾" : "▸")), open && /*#__PURE__*/React.createElement(BundleEditor, {
+      b: b,
+      update: update,
+      byId: byId,
+      products: products,
+      compute: compute,
+      onDelete: onDelete,
+      onPromote: onPromote,
+      onSkip: onSkip
+    }));
+  })));
+}
+
+// shared inline styles
 function Trash({
   trash,
   onRestore,
@@ -2153,7 +2372,7 @@ const numCell = {
 };
 const prodGrid = {
   display: "grid",
-  gridTemplateColumns: "1fr 120px 90px 80px 84px 30px",
+  gridTemplateColumns: "1fr 120px 90px 66px 80px 84px 30px",
   gap: 8
 };
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));

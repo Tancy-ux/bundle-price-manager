@@ -6,6 +6,18 @@ const money = (n)=> isNaN(n)||n==null ? "—"
 const round2 = (n)=> Math.round(n*100)/100;
 const uid = ()=> Math.random().toString(36).slice(2,9);
 
+// relative time for the "stock synced" indicator, e.g. "3h ago", "just now"
+function timeAgo(iso){
+  const ms = Date.now()-new Date(iso).getTime();
+  if(ms<60000) return "just now";
+  const mins=Math.floor(ms/60000);
+  if(mins<60) return `${mins}m ago`;
+  const hrs=Math.floor(mins/60);
+  if(hrs<24) return `${hrs}h ago`;
+  const days=Math.floor(hrs/24);
+  return `${days}d ago`;
+}
+
 // Price-change trail kept on each product/bundle: newest first, and capped so the
 // saved document can't grow without bound.
 const MAX_HISTORY = 50;
@@ -113,8 +125,10 @@ function App(){
 
   function compute(b){
     let sum=0, missing=false;
+    const oosItems=[];
     b.items.forEach(it=>{ const p=byId[it.productId];
-      if(!p||!p.active) missing=true; else sum+=p.price*it.qty; });
+      if(!p||!p.active) missing=true; else sum+=p.price*it.qty;
+      if(p && p.stockTracked && (p.stock||0)<=0) oosItems.push({product:p,qty:it.qty}); });
     const target=round2(sum);
     const empty = b.items.length===0;
     const priceMismatch = Math.abs(target-(b.storedPrice||0))>0.009;
@@ -127,12 +141,16 @@ function App(){
     // an empty bundle isn't "stale" — it's just not built yet.
     // a gift-included bundle isn't "stale" on price either — only if an item is missing.
     const stale = !empty && !skipped && (missing || (priceMismatch && !giftIncluded));
-    return {target,missing,stale,empty,giftIncluded,skipped,priceMismatch,diff:target-(b.storedPrice||0)};
+    const hasOOS = oosItems.length>0;
+    return {target,missing,stale,empty,giftIncluded,skipped,priceMismatch,diff:target-(b.storedPrice||0),oosItems,hasOOS};
   }
 
   if(!ready) return <div style={{padding:40,textAlign:"center",color:"var(--muted)"}} className="serif">Loading from disk…</div>;
 
   const staleList = bundles.map(b=>({b,c:compute(b)})).filter(x=>x.c.stale);
+  const oosList = bundles.map(b=>({b,c:compute(b)})).filter(x=>x.c.hasOOS);
+  // freshest stock check across all products, for the "synced" indicator
+  const stockUpdatedAt = products.reduce((max,p)=> p.stockUpdatedAt && p.stockUpdatedAt>(max||"") ? p.stockUpdatedAt : max, null);
 
   return (
     <div style={{maxWidth:880,margin:"0 auto",padding:"0 20px 60px"}}>
@@ -146,15 +164,17 @@ function App(){
           <div style={{fontSize:13,color:"var(--muted)",textAlign:"right"}}>
             <div><b style={{color:"var(--ink)"}}>{products.length}</b> products · <b style={{color:"var(--ink)"}}>{bundles.length}</b> bundles</div>
             <div style={{fontSize:11,marginTop:2,color:saving?"var(--amber)":"var(--sage)"}}>{saving?"saving…":"saved to disk ✓"}</div>
+            <div style={{fontSize:11,marginTop:2,color:"var(--muted)"}}>stock {stockUpdatedAt?`synced ${timeAgo(stockUpdatedAt)}`:"never synced"}</div>
           </div>
         </header>
         <nav style={{display:"flex",gap:2,margin:"18px 0 0",borderBottom:"1px solid var(--line)",flexWrap:"wrap"}}>
           {[["worklist",`Needs updating${staleList.length?` (${staleList.length})`:""}`],
             ["bundles","Bundles"],["products","Products"],["whereused","In bundles"],
+            ["stock",`Out of stock${oosList.length?` (${oosList.length})`:""}`],
             ["trash",`Trash${trash.length?` (${trash.length})`:""}`]].map(([k,label])=>(
             <button key={k} onClick={()=>setTab(k)} style={{background:"none",border:"none",padding:"10px 14px",
               fontSize:13.5,fontWeight:600,cursor:"pointer",
-              color: tab===k?"var(--ink)":(k==="worklist"&&staleList.length?"var(--clay)":"var(--muted)"),
+              color: tab===k?"var(--ink)":((k==="worklist"&&staleList.length)||(k==="stock"&&oosList.length)?"var(--clay)":"var(--muted)"),
               borderBottom:`2px solid ${tab===k?"var(--clay)":"transparent"}`,marginBottom:-1}}>{label}</button>
           ))}
         </nav>
@@ -177,6 +197,8 @@ function App(){
       {tab==="bundles" && <Bundles bundles={bundles} setBundles={setBundles} products={products} compute={compute} byId={byId} onDelete={deleteBundle} onPromote={promoteToProduct} onSkip={skipBundle}/>}
       {tab==="products" && <Products products={products} setProducts={setProducts} bundles={bundles} onDelete={deleteProduct} showUndo={showUndo} flash={flash}/>}
       {tab==="whereused" && <WhereUsed bundles={bundles} products={products} compute={compute}/>}
+      {tab==="stock" && <StockIssues oosList={oosList} bundles={bundles} setBundles={setBundles} byId={byId} products={products}
+        compute={compute} onDelete={deleteBundle} onPromote={promoteToProduct} onSkip={skipBundle}/>}
       {tab==="trash" && <Trash trash={trash} onRestore={restoreFromTrash} onDelete={deleteFromTrash} onEmpty={emptyTrash}/>}
       </div>
     </div>
@@ -392,6 +414,8 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
               gap:10,padding:"11px 14px",background:"none",border:"none",cursor:"pointer",textAlign:"left"}}>
               <span style={{width:8,height:8,borderRadius:999,background:c.empty?"var(--line)":(c.stale?"var(--clay)":"var(--sage)"),flexShrink:0}}/>
               <span style={{flex:1,fontSize:14.5,fontWeight:600}}>{b.name}
+                {c.hasOOS && <span title={`Out of stock: ${c.oosItems.map(x=>x.product.name).join(", ")}`} style={{marginLeft:7,fontSize:11,fontWeight:700,
+                  color:"var(--clay)",border:"1px solid var(--clay)",borderRadius:999,padding:"1px 7px",verticalAlign:"middle"}}>oos</span>}
                 {b.giftIncluded && <span title="Gift / packaging price included" style={{marginLeft:7,fontSize:11,fontWeight:700,
                   color:"var(--amber)",border:"1px solid var(--amber)",borderRadius:999,padding:"1px 7px",verticalAlign:"middle"}}>gift</span>}
                 {b.skipped && <span title="Skipped — kept out of the worklist" style={{marginLeft:7,fontSize:11,fontWeight:700,
@@ -441,12 +465,18 @@ function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}
           }}/>
         {b.items.length===0 && <div style={{fontSize:13,color:"var(--muted)",fontStyle:"italic"}}>No items yet — use the bar above to add components fast.</div>}
         {b.items.map((it,idx)=>{ const p=byId[it.productId]; const broke=!p||!p.active;
+          const oos = p && p.stockTracked && (p.stock||0)<=0;
           return (
           <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
             <input type="number" min="1" value={it.qty} onChange={e=>{const items=[...b.items];items[idx]={...it,qty:Math.max(1,parseInt(e.target.value)||1)};update(b.id,{items});}}
               style={{width:46,padding:"6px",borderRadius:7,border:"1px solid var(--line)",fontSize:13,textAlign:"center"}}/>
             <span style={{color:"var(--muted)",fontSize:13}}>×</span>
-            <span style={{flex:1,fontSize:14,color:broke?"var(--clay)":"var(--ink)"}}>{p?p.name:"(missing product)"}{broke&&p?" (inactive)":""}</span>
+            <span style={{flex:1,fontSize:14,color:broke?"var(--clay)":"var(--ink)"}}>{p?p.name:"(missing product)"}{broke&&p?" (inactive)":""}
+              {oos && <span style={{marginLeft:7,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,
+                padding:"1px 6px",borderRadius:999,verticalAlign:"middle",color:"var(--clay)",border:"1px solid var(--clay)"}}>out of stock</span>}
+            </span>
+            <span style={{width:56,textAlign:"right",fontSize:12.5,color:p&&p.stockTracked?(oos?"var(--clay)":"var(--muted)"):"var(--line)"}}
+              title={p&&p.stockTracked?`${p.stock} in stock`:"stock not tracked"}>{p&&p.stockTracked?p.stock:"—"}</span>
             <span style={{width:78,textAlign:"right",fontSize:13,color:"var(--muted)"}}>{p&&p.active?money(p.price*it.qty):"—"}</span>
             <button onClick={()=>update(b.id,{items:b.items.filter((_,i)=>i!==idx)})} style={xBtn}>✕</button>
           </div>
@@ -636,6 +666,7 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
         <div style={{...prodGrid,padding:"10px 14px",fontSize:11,textTransform:"uppercase",letterSpacing:.4,
           color:"var(--muted)",fontWeight:700,borderBottom:"1px solid var(--line)"}}>
           <span>Product</span><span>SKU</span><span style={{textAlign:"right"}}>Price</span>
+          <span style={{textAlign:"right"}}>Stock</span>
           <span style={{textAlign:"center"}}>In bundles</span><span style={{textAlign:"center"}}>Active</span><span/>
         </div>
         {shown.map(p=>{ const used=usage[p.id]||[]; const isOpen=expanded===p.id; return (
@@ -651,6 +682,10 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
                   const to=parseFloat(e.target.value)||0;
                   if(Math.abs(to-s.value)>0.009) logPriceChange(p.id,s.value,to); }}
                 style={{border:"1px solid var(--line)",borderRadius:6,padding:"6px 8px",fontSize:14,textAlign:"right"}}/>
+              {p.stockTracked
+                ? <span style={{textAlign:"right",fontSize:13,fontWeight:p.stock<=0?700:400,
+                    color:p.stock<=0?"var(--clay)":"var(--ink)"}}>{p.stock}{p.stock<=0?" oos":""}</span>
+                : <span style={{textAlign:"right",fontSize:13,color:"var(--line)"}} title="Stock not tracked in Shopify">—</span>}
               {used.length>0
                 ? <button onClick={()=>setExpanded(isOpen?null:p.id)}
                     title="Show which bundles use this"
@@ -745,6 +780,50 @@ function WhereUsed({bundles,products,compute}){
   );
 }
 
+// "Out of stock" — every bundle that can't be fulfilled right now because at
+// least one of its components has zero tracked stock in Shopify, and exactly
+// which component(s) those are. Fed by the stock the fetch-stock script pulls in.
+function StockIssues({oosList,bundles,setBundles,byId,products,compute,onDelete,onPromote,onSkip}){
+  const [openId,setOpenId]=useState(null);
+  const update=(id,patch)=> setBundles(bundles.map(b=>b.id===id?{...b,...patch}:b));
+
+  if(!oosList.length) return (
+    <div style={{textAlign:"center",padding:"60px 20px",background:"var(--card)",border:"1px solid var(--line)",borderRadius:14}}>
+      <div style={{width:52,height:52,borderRadius:999,background:"var(--sageDim)",color:"var(--sage)",
+        display:"grid",placeItems:"center",fontSize:26,margin:"0 auto 14px"}}>✓</div>
+      <h2 className="serif" style={{fontSize:22,margin:"0 0 6px"}}>Nothing out of stock</h2>
+      <p style={{color:"var(--muted)",maxWidth:420,margin:"0 auto",lineHeight:1.5}}>
+        Every bundle's components have stock, as of the last sync. Run <code>npm run fetch-stock</code> (or
+        wait for the scheduled check) to refresh.</p>
+    </div>
+  );
+
+  return (
+    <div>
+      <p style={note}>{oosList.length} bundle{oosList.length>1?"s":""} blocked by an out-of-stock component.</p>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {oosList.map(({b,c})=>{ const open=openId===b.id; return (
+          <div key={b.id} style={{background:"var(--card)",border:"1px solid var(--clay)",
+            borderLeft:"3px solid var(--clay)",borderRadius:10,overflow:"hidden"}}>
+            <button onClick={()=>setOpenId(open?null:b.id)} style={{width:"100%",display:"flex",alignItems:"center",
+              gap:10,padding:"11px 14px",background:"none",border:"none",cursor:"pointer",textAlign:"left"}}>
+              <span style={{flex:1,fontSize:14.5,fontWeight:600}}>{b.name}
+                {b.sku && <span style={{fontSize:11.5,color:"var(--muted)",marginLeft:6}}>{b.sku}</span>}</span>
+              <span style={{fontSize:13,color:"var(--clay)",fontWeight:600}}>
+                {c.oosItems.map(x=>x.product.name).join(", ")}</span>
+              <span style={{color:"var(--muted)",fontSize:12}}>{open?"▾":"▸"}</span>
+            </button>
+            {open && (
+              <BundleEditor b={b} update={update} byId={byId} products={products}
+                compute={compute} onDelete={onDelete} onPromote={onPromote} onSkip={onSkip}/>
+            )}
+          </div>
+        );})}
+      </div>
+    </div>
+  );
+}
+
 // shared inline styles
 function Trash({trash,onRestore,onDelete,onEmpty}){
   if(!trash.length) return (
@@ -792,6 +871,6 @@ const sel={padding:"7px 9px",borderRadius:7,border:"1px solid var(--line)",backg
 const vRow={display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:14};
 const wlGrid={display:"grid",gridTemplateColumns:"1fr 100px 100px 90px 110px",gap:10};
 const numCell={textAlign:"right",fontSize:14};
-const prodGrid={display:"grid",gridTemplateColumns:"1fr 120px 90px 80px 84px 30px",gap:8};
+const prodGrid={display:"grid",gridTemplateColumns:"1fr 120px 90px 66px 80px 84px 30px",gap:8};
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
