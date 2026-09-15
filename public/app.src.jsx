@@ -504,7 +504,7 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
               {!c.empty && c.stock!==null && <span style={{fontSize:12.5,fontWeight:600,
                 color:c.stock<=0?"var(--clay)":"var(--muted)"}} title="Sellable stock — the least of its components">
                 {c.stock} in stock</span>}
-              <span style={{fontSize:13,color:"var(--muted)"}}>{c.empty?<span style={{color:"var(--amber)"}}>not built yet</span>:(c.missing?"needs item fix":money(c.target))}</span>
+              <span style={{fontSize:13,color:"var(--muted)"}}>{c.empty?<span style={{color:"var(--amber)"}}>not built yet</span>:(c.missing?"needs item fix":money(c.giftIncluded?b.storedPrice:c.target))}</span>
               <span style={{color:"var(--muted)",fontSize:12}}>{open?"▾":"▸"}</span>
             </button>
             {open && (
@@ -854,7 +854,7 @@ function WhereUsed({bundles,products,compute}){
                   <span style={{flex:1,fontSize:14,fontWeight:600}}>{b.name}
                     {b.sku && <span style={{fontSize:11.5,color:"var(--muted)",marginLeft:6}}>{b.sku}</span>}</span>
                   <span style={{fontSize:12.5,color:"var(--muted)"}}>qty {it?it.qty:"—"}</span>
-                  <span style={{fontSize:13,fontWeight:600,minWidth:70,textAlign:"right"}}>{c.empty?"—":money(c.target)}</span>
+                  <span style={{fontSize:13,fontWeight:600,minWidth:70,textAlign:"right"}}>{c.empty?"—":money(c.giftIncluded?b.storedPrice:c.target)}</span>
                 </div>
               );
             })}

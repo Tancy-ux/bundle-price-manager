@@ -1256,7 +1256,7 @@ function Bundles({
       style: {
         color: "var(--amber)"
       }
-    }, "not built yet") : c.missing ? "needs item fix" : money(c.target)), /*#__PURE__*/React.createElement("span", {
+    }, "not built yet") : c.missing ? "needs item fix" : money(c.giftIncluded ? b.storedPrice : c.target)), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "var(--muted)",
         fontSize: 12
@@ -2238,7 +2238,7 @@ function WhereUsed({
         minWidth: 70,
         textAlign: "right"
       }
-    }, c.empty ? "—" : money(c.target)));
+    }, c.empty ? "—" : money(c.giftIncluded ? b.storedPrice : c.target)));
   })))));
 }
 
