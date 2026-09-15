@@ -330,9 +330,10 @@ function App() {
     let sum = 0,
       missing = false;
     const oosItems = [];
-    // bundle's own sellable stock = least of its active, tracked components —
-    // you can only build as many as your scarcest part allows. null when no
-    // component has trackable stock (nothing to compare).
+    // bundle's own sellable stock = least of its active, tracked components,
+    // each divided by how many that one bundle needs — a component at 58
+    // units but needed 9-per-bundle only supports 6 complete bundles, not 58.
+    // null when no component has trackable stock (nothing to compare).
     let stock = null;
     b.items.forEach((it) => {
       const p = byId[it.productId];
@@ -343,8 +344,8 @@ function App() {
       if (p && p.active && p.stockTracked && (p.stock || 0) <= 0)
         oosItems.push({ product: p, qty: it.qty });
       if (p && p.active && p.stockTracked) {
-        const s = p.stock || 0;
-        stock = stock === null ? s : Math.min(stock, s);
+        const buildable = Math.floor((p.stock || 0) / (it.qty || 1));
+        stock = stock === null ? buildable : Math.min(stock, buildable);
       }
     });
     const target = round2(sum);
@@ -1612,7 +1613,7 @@ function Bundles({
                       fontWeight: 600,
                       color: c.stock <= 0 ? "var(--clay)" : "var(--muted)",
                     }}
-                    title="Sellable stock — the least of its components"
+                    title="Sellable stock — each component's stock ÷ qty needed, then the least of those"
                   >
                     {c.stock} in stock
                   </span>
@@ -1850,7 +1851,7 @@ function BundleEditor({
         {c.stock !== null && (
           <div style={vRow}>
             <span style={{ color: "var(--muted)" }}>
-              Sellable stock (least component)
+              Sellable stock (stock ÷ qty, least component)
             </span>
             <strong
               style={{ color: c.stock <= 0 ? "var(--clay)" : "var(--ink)" }}

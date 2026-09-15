@@ -322,9 +322,10 @@ function App() {
     let sum = 0,
       missing = false;
     const oosItems = [];
-    // bundle's own sellable stock = least of its active, tracked components —
-    // you can only build as many as your scarcest part allows. null when no
-    // component has trackable stock (nothing to compare).
+    // bundle's own sellable stock = least of its active, tracked components,
+    // each divided by how many that one bundle needs — a component at 58
+    // units but needed 9-per-bundle only supports 6 complete bundles, not 58.
+    // null when no component has trackable stock (nothing to compare).
     let stock = null;
     b.items.forEach(it => {
       const p = byId[it.productId];
@@ -336,8 +337,8 @@ function App() {
         qty: it.qty
       });
       if (p && p.active && p.stockTracked) {
-        const s = p.stock || 0;
-        stock = stock === null ? s : Math.min(stock, s);
+        const buildable = Math.floor((p.stock || 0) / (it.qty || 1));
+        stock = stock === null ? buildable : Math.min(stock, buildable);
       }
     });
     const target = round2(sum);
@@ -443,7 +444,7 @@ function App() {
     style: {
       color: "var(--ink)"
     }
-  }, products.length), " products · ", /*#__PURE__*/React.createElement("b", {
+  }, products.length), " ", "products ·", " ", /*#__PURE__*/React.createElement("b", {
     style: {
       color: "var(--ink)"
     }
@@ -459,13 +460,13 @@ function App() {
       marginTop: 2,
       color: "var(--muted)"
     }
-  }, "stock ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced")), /*#__PURE__*/React.createElement("button", {
+  }, "stock", " ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced")), /*#__PURE__*/React.createElement("button", {
     onClick: syncNow,
     disabled: syncing || !syncEligible,
     title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 24h` : "Pull new products, new bundle shells, and refresh stock from Shopify",
     style: {
       ...btnSec,
-      opacity: syncing || !syncEligible ? .55 : 1,
+      opacity: syncing || !syncEligible ? 0.55 : 1,
       cursor: syncing || !syncEligible ? "default" : "pointer"
     }
   }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("nav", {
@@ -765,7 +766,7 @@ function Worklist({
       padding: "10px 16px",
       fontSize: 11,
       textTransform: "uppercase",
-      letterSpacing: .5,
+      letterSpacing: 0.5,
       color: "var(--muted)",
       fontWeight: 700,
       borderBottom: "1px solid var(--line)"
@@ -799,7 +800,7 @@ function Worklist({
       fontSize: 10,
       fontWeight: 700,
       textTransform: "uppercase",
-      letterSpacing: .4,
+      letterSpacing: 0.4,
       padding: "1px 6px",
       borderRadius: 999,
       verticalAlign: "middle",
@@ -813,8 +814,8 @@ function Worklist({
       color: "var(--muted)"
     }
   }, new Date(h.at).toLocaleDateString(), " ", new Date(h.at).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit'
+    hour: "2-digit",
+    minute: "2-digit"
   })), /*#__PURE__*/React.createElement("span", {
     style: {
       textAlign: "right",
@@ -911,7 +912,7 @@ function Worklist({
       padding: "10px 16px",
       fontSize: 11,
       textTransform: "uppercase",
-      letterSpacing: .5,
+      letterSpacing: 0.5,
       color: "var(--muted)",
       fontWeight: 700,
       borderBottom: "1px solid var(--line)"
@@ -1019,7 +1020,7 @@ function Worklist({
         ...wlGrid,
         padding: "11px 16px",
         alignItems: "center",
-        opacity: .85
+        opacity: 0.85
       }
     }, /*#__PURE__*/React.createElement("button", {
       onClick: () => setOpenId(open ? null : b.id),
@@ -1365,7 +1366,7 @@ function Bundles({
         fontWeight: 600,
         color: c.stock <= 0 ? "var(--clay)" : "var(--muted)"
       },
-      title: "Sellable stock — the least of its components"
+      title: "Sellable stock — each component's stock ÷ qty needed, then the least of those"
     }, c.stock, " in stock"), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 13,
@@ -1530,7 +1531,7 @@ function BundleEditor({
         fontSize: 10,
         fontWeight: 700,
         textTransform: "uppercase",
-        letterSpacing: .4,
+        letterSpacing: 0.4,
         padding: "1px 6px",
         borderRadius: 999,
         verticalAlign: "middle",
@@ -1579,7 +1580,7 @@ function BundleEditor({
     style: {
       color: "var(--muted)"
     }
-  }, "Sellable stock (least component)"), /*#__PURE__*/React.createElement("strong", {
+  }, "Sellable stock (stock ÷ qty, least component)"), /*#__PURE__*/React.createElement("strong", {
     style: {
       color: c.stock <= 0 ? "var(--clay)" : "var(--ink)"
     }
@@ -2022,7 +2023,7 @@ function Products({
       ...note,
       marginTop: 10
     }
-  }, filtered.length, " match", filtered.length === 1 ? "" : "es", filtered.length > shown.length ? ` · showing first ${shown.length}` : "", " · edit a price and every bundle using it updates"), filtered.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, filtered.length, " match", filtered.length === 1 ? "" : "es", filtered.length > shown.length ? ` · showing first ${shown.length}` : "", " ", "· edit a price and every bundle using it updates"), filtered.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "36px 20px",
@@ -2063,7 +2064,7 @@ function Products({
       padding: "10px 14px",
       fontSize: 11,
       textTransform: "uppercase",
-      letterSpacing: .4,
+      letterSpacing: 0.4,
       color: "var(--muted)",
       fontWeight: 700,
       borderBottom: "1px solid var(--line)"
@@ -2091,7 +2092,7 @@ function Products({
       key: p.id,
       style: {
         borderBottom: "1px solid var(--line)",
-        opacity: p.active ? 1 : .5
+        opacity: p.active ? 1 : 0.5
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -2287,7 +2288,7 @@ function WhereUsed({
       ...note,
       marginTop: 14
     }
-  }, results.length, " matching product", results.length > 1 ? "s" : "", " · ", totalBundles, " bundle", totalBundles > 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
+  }, results.length, " matching product", results.length > 1 ? "s" : "", " ·", " ", totalBundles, " bundle", totalBundles > 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -2428,7 +2429,7 @@ function StockIssues({
       margin: "0 auto",
       lineHeight: 1.5
     }
-  }, "Every bundle's components have stock, as of the last sync. Run ", /*#__PURE__*/React.createElement("code", null, "npm run fetch-stock"), " (or wait for the scheduled check) to refresh."));
+  }, "Every bundle's components have stock, as of the last sync. Run", " ", /*#__PURE__*/React.createElement("code", null, "npm run fetch-stock"), " (or wait for the scheduled check) to refresh."));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     style: note
   }, oosList.length, " bundle", oosList.length > 1 ? "s" : "", " blocked by an out-of-stock component."), /*#__PURE__*/React.createElement("div", {
