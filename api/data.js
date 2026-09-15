@@ -39,7 +39,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PUT") {
-      const { products, bundles, trash } = req.body || {};
+      const { products, bundles, trash, excludedSkus, excludedBundleNames } = req.body || {};
       if (!Array.isArray(products) || !Array.isArray(bundles)) {
         return res.status(400).json({ error: "products and bundles must be arrays" });
       }
@@ -54,10 +54,15 @@ export default async function handler(req, res) {
         await redis.ltrim(BACKUPS, 0, MAX_BACKUPS - 1);
       }
 
+      // merge onto the previous doc so fields the client doesn't manage
+      // (lastSyncAt, from the Shopify sync button) survive a normal autosave
       const saved = {
+        ...(prev || {}),
         products,
         bundles,
         trash: Array.isArray(trash) ? trash : [],
+        excludedSkus: Array.isArray(excludedSkus) ? excludedSkus : (prev?.excludedSkus || []),
+        excludedBundleNames: Array.isArray(excludedBundleNames) ? excludedBundleNames : (prev?.excludedBundleNames || []),
         updatedAt: new Date().toISOString(),
       };
       await redis.set(KEY, saved);

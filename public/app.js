@@ -37,6 +37,7 @@ const pushHistory = (item, from, to) => [{
 // in any order. So "plate lunar" matches "Lunar Nude Plate", and "lun pla"
 // matches it too (partial words). Punctuation/extra spaces are ignored.
 const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const normSku = s => (s || "").trim().toLowerCase();
 function matchText(query, haystack) {
   const q = norm(query);
   if (!q) return true;
@@ -47,7 +48,7 @@ async function apiGet() {
   const r = await fetch("/api/data");
   return r.json();
 }
-async function apiPut(products, bundles, trash) {
+async function apiPut(products, bundles, trash, excludedSkus, excludedBundleNames) {
   const r = await fetch("/api/data", {
     method: "PUT",
     headers: {
@@ -56,7 +57,9 @@ async function apiPut(products, bundles, trash) {
     body: JSON.stringify({
       products,
       bundles,
-      trash: trash || []
+      trash: trash || [],
+      excludedSkus: excludedSkus || [],
+      excludedBundleNames: excludedBundleNames || []
     })
   });
   return r.json();
@@ -65,6 +68,10 @@ function App() {
   const [products, setProducts] = useState(null);
   const [bundles, setBundles] = useState(null);
   const [trash, setTrash] = useState([]); // {kind, item, at}
+  // SKUs (products) / normalised names (bundles) deliberately deleted before —
+  // a future Shopify sync won't re-add them. Restoring from Trash clears the entry.
+  const [excludedSkus, setExcludedSkus] = useState([]);
+  const [excludedBundleNames, setExcludedBundleNames] = useState([]);
   const [tab, setTab] = useState("worklist");
   const [toast, setToast] = useState(null);
   const [undo, setUndo] = useState(null); // {label, restore}
@@ -80,6 +87,8 @@ function App() {
       setProducts(d.products || []);
       setBundles(d.bundles || []);
       setTrash(d.trash || []);
+      setExcludedSkus(d.excludedSkus || []);
+      setExcludedBundleNames(d.excludedBundleNames || []);
       setLastSyncAt(d.lastSyncAt || null);
       setReady(true);
     })();
@@ -94,7 +103,7 @@ function App() {
     }
     let cancel = false;
     setSaving(true);
-    apiPut(products, bundles, trash).then(() => {
+    apiPut(products, bundles, trash, excludedSkus, excludedBundleNames).then(() => {
       if (!cancel) {
         setSaving(false);
       }
@@ -107,7 +116,7 @@ function App() {
     return () => {
       cancel = true;
     };
-  }, [products, bundles, trash, ready]);
+  }, [products, bundles, trash, excludedSkus, excludedBundleNames, ready]);
   const flash = m => {
     setToast(m);
     setTimeout(() => setToast(null), 2600);
@@ -167,9 +176,32 @@ function App() {
   const SYNC_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   const syncEligible = !lastSyncAt || Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
 
+  // deletion also excludes the item from future Shopify syncs (by SKU for
+  // products, by name for bundles) so it never silently comes back. Restoring
+  // (via Undo here, or from Trash) clears the exclusion again.
+  const excludeSku = sku => {
+    const s = normSku(sku);
+    if (!s) return;
+    setExcludedSkus(cur => cur.includes(s) ? cur : [...cur, s]);
+  };
+  const unexcludeSku = sku => {
+    const s = normSku(sku);
+    setExcludedSkus(cur => cur.filter(x => x !== s));
+  };
+  const excludeBundleName = name => {
+    const n = norm(name);
+    if (!n) return;
+    setExcludedBundleNames(cur => cur.includes(n) ? cur : [...cur, n]);
+  };
+  const unexcludeBundleName = name => {
+    const n = norm(name);
+    setExcludedBundleNames(cur => cur.filter(x => x !== n));
+  };
+
   // delete a bundle -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteBundle(b) {
     setBundles(bundles.filter(x => x.id !== b.id));
+    excludeBundleName(b.name);
     const entry = {
       kind: "bundle",
       item: b,
@@ -179,11 +211,15 @@ function App() {
     showUndo(`Deleted "${b.name}"`, () => {
       setBundles(cur => [b, ...cur]);
       setTrash(t => t.filter(e => e !== entry));
+      unexcludeBundleName(b.name);
     });
   }
   // delete a product -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteProduct(p) {
     setProducts(products.filter(x => x.id !== p.id));
+    // a no-SKU product would only ever come back as a re-detected bundle
+    // shell (matched by name), same as a deleted bundle — exclude by name
+    if (p.sku) excludeSku(p.sku);else excludeBundleName(p.name);
     const entry = {
       kind: "product",
       item: p,
@@ -193,10 +229,17 @@ function App() {
     showUndo(`Deleted "${p.name}"`, () => {
       setProducts(cur => [p, ...cur]);
       setTrash(t => t.filter(e => e !== entry));
+      if (p.sku) unexcludeSku(p.sku);else unexcludeBundleName(p.name);
     });
   }
   function restoreFromTrash(entry) {
-    if (entry.kind === "bundle") setBundles(cur => [entry.item, ...cur]);else setProducts(cur => [entry.item, ...cur]);
+    if (entry.kind === "bundle") {
+      setBundles(cur => [entry.item, ...cur]);
+      unexcludeBundleName(entry.item.name);
+    } else {
+      setProducts(cur => [entry.item, ...cur]);
+      if (entry.item.sku) unexcludeSku(entry.item.sku);else unexcludeBundleName(entry.item.name);
+    }
     setTrash(t => t.filter(e => e !== entry));
     flash("Restored");
   }
@@ -253,6 +296,17 @@ function App() {
     (products || []).forEach(p => m[p.id] = p);
     return m;
   }, [products]);
+  // bundles are matched by name (unlike products, which have SKU), so two
+  // bundles sharing a name is a real ambiguity worth flagging — which one
+  // does a Shopify listing / future sync actually mean?
+  const bundleNameCounts = useMemo(() => {
+    const m = {};
+    (bundles || []).forEach(b => {
+      const n = norm(b.name);
+      if (n) m[n] = (m[n] || 0) + 1;
+    });
+    return m;
+  }, [bundles]);
   function compute(b) {
     let sum = 0,
       missing = false;
@@ -288,6 +342,7 @@ function App() {
     // a gift-included bundle isn't "stale" on price either — only if an item is missing.
     const stale = !empty && !skipped && (missing || priceMismatch && !giftIncluded);
     const hasOOS = oosItems.length > 0;
+    const dupName = (bundleNameCounts[norm(b.name)] || 0) > 1;
     return {
       target,
       missing,
@@ -299,7 +354,8 @@ function App() {
       diff: target - (b.storedPrice || 0),
       oosItems,
       hasOOS,
-      stock
+      stock,
+      dupName
     };
   }
   if (!ready) return /*#__PURE__*/React.createElement("div", {
@@ -1014,7 +1070,7 @@ function Bundles({
 }) {
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState(null);
-  const [show, setShow] = useState("all"); // all | empty | filled | oos
+  const [show, setShow] = useState("all"); // all | empty | filled | oos | dup
   const [cat, setCat] = useState(""); // category word
   const [visible, setVisible] = useState(60); // how many rows to show (Load more)
   const active = useMemo(() => products.filter(p => p.active), [products]);
@@ -1023,6 +1079,7 @@ function Bundles({
       if (show === "empty" && b.items.length > 0) return false;
       if (show === "filled" && b.items.length === 0) return false;
       if (show === "oos" && !compute(b).hasOOS) return false;
+      if (show === "dup" && !compute(b).dupName) return false;
       if (cat && !b.name.toLowerCase().includes(cat)) return false;
       if (!matchText(q, b.name + " " + (b.sku || ""))) return false;
       return true;
@@ -1035,6 +1092,7 @@ function Bundles({
   const shown = filtered.slice(0, visible);
   const emptyCount = useMemo(() => bundles.filter(b => b.items.length === 0).length, [bundles]);
   const oosCount = useMemo(() => bundles.filter(b => compute(b).hasOOS).length, [bundles, products]);
+  const dupCount = useMemo(() => bundles.filter(b => compute(b).dupName).length, [bundles]);
   // counts per category word — pills stay visible (and show their count) even at 0 matches.
   // counted within the current "show" sub-filter so the numbers reflect what you'd actually see.
   const catCounts = useMemo(() => {
@@ -1088,7 +1146,7 @@ function Bundles({
       gap: 6,
       marginBottom: 8
     }
-  }, [["all", `All (${bundles.length})`], ["empty", `Not built yet (${emptyCount})`], ["filled", `Built (${bundles.length - emptyCount})`], ["oos", `Out of stock (${oosCount})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["all", `All (${bundles.length})`], ["empty", `Not built yet (${emptyCount})`], ["filled", `Built (${bundles.length - emptyCount})`], ["oos", `Out of stock (${oosCount})`], ["dup", `Duplicate names (${dupCount})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setShow(k),
     style: {
@@ -1196,7 +1254,19 @@ function Bundles({
         fontSize: 14.5,
         fontWeight: 600
       }
-    }, b.name, c.hasOOS && /*#__PURE__*/React.createElement("span", {
+    }, b.name, c.dupName && /*#__PURE__*/React.createElement("span", {
+      title: "Another bundle has this exact same name — ambiguous for matching/syncing. Rename one of them.",
+      style: {
+        marginLeft: 7,
+        fontSize: 11,
+        fontWeight: 700,
+        color: "var(--amber)",
+        border: "1px solid var(--amber)",
+        borderRadius: 999,
+        padding: "1px 7px",
+        verticalAlign: "middle"
+      }
+    }, "dup name"), c.hasOOS && /*#__PURE__*/React.createElement("span", {
       title: `Out of stock: ${c.oosItems.map(x => x.product.name).join(", ")}`,
       style: {
         marginLeft: 7,

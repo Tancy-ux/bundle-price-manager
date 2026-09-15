@@ -91,14 +91,20 @@ const isExcluded = (name) => {
   return EXCLUDE_KEYWORDS.some((k) => n.includes(k));
 };
 
+// bundle names the user deliberately deleted before (still in Trash, or
+// permanently deleted) — never re-add these; restoring from Trash clears them
+const deletedBundleNames = new Set(base.excludedBundleNames || []);
+
 const toAdd = [];
 const skippedBundle = [];
 const skippedProduct = [];
 const skippedExcluded = [];
+const skippedDeleted = [];
 
 for (const p of incoming) {
   const n = normName(p.name);
   if (isExcluded(p.name)) { skippedExcluded.push(p); continue; }
+  if (deletedBundleNames.has(n)) { skippedDeleted.push(p); continue; }
   if (existingBundleNames.has(n)) { skippedBundle.push(p); continue; }
   if (existingProductNames.has(n)) { skippedProduct.push(p); continue; }
   toAdd.push({ id: uid(), sku: "", name: p.name, items: [], storedPrice: p.price });
@@ -117,6 +123,10 @@ if (toAdd.length > 60) console.log(`     ...and ${toAdd.length - 60} more`);
 if (skippedExcluded.length) {
   console.log(`\n  -${skippedExcluded.length} excluded (gift card / voucher / payment / test item)`);
   skippedExcluded.forEach((p) => console.log(`     ${money(p.price).padStart(10)}  ${p.name}`));
+}
+if (skippedDeleted.length) {
+  console.log(`\n  -${skippedDeleted.length} skipped — you deleted these before, not re-adding`);
+  skippedDeleted.forEach((p) => console.log(`     ${money(p.price).padStart(10)}  ${p.name}`));
 }
 if (skippedBundle.length)
   console.log(`\n  =${skippedBundle.length} already exist as a bundle here (skipped, left untouched)`);

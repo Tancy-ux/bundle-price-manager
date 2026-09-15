@@ -71,11 +71,21 @@ app.get("/api/data", (req, res) => {
 });
 
 app.put("/api/data", (req, res) => {
-  const { products, bundles, trash } = req.body || {};
+  const { products, bundles, trash, excludedSkus, excludedBundleNames } = req.body || {};
   if (!Array.isArray(products) || !Array.isArray(bundles)) {
     return res.status(400).json({ error: "products and bundles must be arrays" });
   }
-  const saved = writeData({ products, bundles, trash: Array.isArray(trash) ? trash : [] });
+  // merge onto the previous doc so fields the client doesn't manage
+  // (lastSyncAt, from the Shopify sync button) survive a normal autosave
+  const prev = readData();
+  const saved = writeData({
+    ...prev,
+    products,
+    bundles,
+    trash: Array.isArray(trash) ? trash : [],
+    excludedSkus: Array.isArray(excludedSkus) ? excludedSkus : (prev.excludedSkus || []),
+    excludedBundleNames: Array.isArray(excludedBundleNames) ? excludedBundleNames : (prev.excludedBundleNames || []),
+  });
   res.json({ ok: true, updatedAt: saved.updatedAt });
 });
 
