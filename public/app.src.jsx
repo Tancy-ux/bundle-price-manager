@@ -2170,6 +2170,18 @@ function QuickAdd({ products, byId, onAdd }) {
   );
 }
 
+// products from the "Claude"/"Horizon"/"Arc"/"Pivot Marble" lines — kept as
+// their own silo, same idea as the Bundles marble-vase/Lush/Diverge one, so
+// they don't clutter the main product views by default.
+const isMarbleAtelier = (name) => {
+  const w = norm(name).split(" ");
+  return (
+    w.includes("claude") ||
+    w.includes("horizon") ||
+    w.includes("arc") ||
+    (w.includes("pivot") && w.includes("marble"))
+  );
+};
 function Products({
   products,
   setProducts,
@@ -2181,8 +2193,16 @@ function Products({
 }) {
   const [q, setQ] = useState("");
   const [visible, setVisible] = useState(100);
-  const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused | oos
+  const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused | oos | atelier
   const isOOS = (p) => p.active && p.stockTracked && (p.stock || 0) <= 0;
+  const normalProducts = useMemo(
+    () => products.filter((p) => !isMarbleAtelier(p.name)),
+    [products],
+  );
+  const atelierProducts = useMemo(
+    () => products.filter((p) => isMarbleAtelier(p.name)),
+    [products],
+  );
   const [expanded, setExpanded] = useState(null); // product id whose bundle list is open
   const priceFocus = useRef(null); // {id,value} captured when a price field gains focus
   // log a product price change on blur, so typing doesn't add an entry per keystroke
@@ -2208,13 +2228,15 @@ function Products({
   const usedCount = (p) => (usage[p.id] || []).length;
   const baseList = useMemo(
     () =>
-      products.filter((p) => {
-        if (usageFilter === "used" && usedCount(p) === 0) return false;
-        if (usageFilter === "unused" && usedCount(p) > 0) return false;
-        if (usageFilter === "oos" && !isOOS(p)) return false;
-        return true;
-      }),
-    [products, usage, usageFilter],
+      (usageFilter === "atelier" ? atelierProducts : normalProducts).filter(
+        (p) => {
+          if (usageFilter === "used" && usedCount(p) === 0) return false;
+          if (usageFilter === "unused" && usedCount(p) > 0) return false;
+          if (usageFilter === "oos" && !isOOS(p)) return false;
+          return true;
+        },
+      ),
+    [normalProducts, atelierProducts, usage, usageFilter],
   );
   const filtered = useMemo(() => {
     if (!q.trim()) return baseList;
@@ -2243,12 +2265,12 @@ function Products({
     let used = 0,
       unused = 0,
       oos = 0;
-    products.forEach((p) => {
+    normalProducts.forEach((p) => {
       usedCount(p) > 0 ? used++ : unused++;
       if (isOOS(p)) oos++;
     });
-    return { all: products.length, used, unused, oos };
-  }, [products, usage]);
+    return { all: normalProducts.length, used, unused, oos, atelier: atelierProducts.length };
+  }, [normalProducts, atelierProducts, usage]);
   // bulk: deactivate every currently-shown product that isn't in any bundle (with undo)
   const unusedShownActive = filtered.filter(
     (p) => usedCount(p) === 0 && p.active,
@@ -2304,6 +2326,7 @@ function Products({
             ["used", `In a bundle (${counts.used})`, false],
             ["unused", `Not in any bundle (${counts.unused})`, false],
             ["oos", `Out of stock (${counts.oos})`, counts.oos === 0],
+            ["atelier", `Marble Atelier (${counts.atelier})`, counts.atelier === 0],
           ].map(([k, label, hideAtZero]) => {
             if (hideAtZero && usageFilter !== k) return null;
             return (
