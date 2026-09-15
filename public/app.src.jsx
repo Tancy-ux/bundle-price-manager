@@ -49,13 +49,17 @@ function App(){
   const [tab,setTab]=useState("worklist");
   const [toast,setToast]=useState(null);
   const [undo,setUndo]=useState(null); // {label, restore}
+  const [confirmState,setConfirmState]=useState(null); // {title, detail, confirmLabel, danger, resolve}
   const [saving,setSaving]=useState(false);
   const [ready,setReady]=useState(false);
+  const [lastSyncAt,setLastSyncAt]=useState(null);
+  const [syncing,setSyncing]=useState(false);
   const firstLoad = useRef(true);
 
   useEffect(()=>{(async()=>{
     const d = await apiGet();
-    setProducts(d.products||[]); setBundles(d.bundles||[]); setTrash(d.trash||[]); setReady(true);
+    setProducts(d.products||[]); setBundles(d.bundles||[]); setTrash(d.trash||[]);
+    setLastSyncAt(d.lastSyncAt||null); setReady(true);
   })();},[]);
 
   // autosave to disk on any change (skip the initial load)
@@ -71,18 +75,46 @@ function App(){
 
   const flash=(m)=>{ setToast(m); setTimeout(()=>setToast(null),2600); };
   const showUndo=(label,restore)=>{ setUndo({label,restore}); setTimeout(()=>setUndo(u=>u&&u.label===label?null:u),6000); };
+  // in-app replacement for window.confirm — returns a Promise<boolean>, resolved
+  // when the user picks a button in <ConfirmModal/> (rendered once, below)
+  const askConfirm=({title,detail,confirmLabel="Delete",danger=true})=>
+    new Promise(resolve=> setConfirmState({title,detail,confirmLabel,danger,resolve}));
 
-  // delete a bundle -> trash + undo
+  // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
+  // shells (active + no SKU), and refreshes stock on everything, in one call.
+  // Throttled server-side to once/24h; syncEligible below mirrors that for the UI.
+  async function syncNow(){
+    setSyncing(true);
+    try{
+      const r = await fetch("/api/sync",{method:"POST"});
+      const j = await r.json();
+      if(r.status===429){
+        const hrs=Math.ceil((j.retryAfterMs||0)/3600000);
+        flash(`Already synced — try again in about ${hrs}h`);
+        return;
+      }
+      if(!r.ok){ flash(j.error||"Sync failed"); return; }
+      setProducts(j.data.products||[]); setBundles(j.data.bundles||[]); setLastSyncAt(j.data.lastSyncAt||null);
+      const s=j.summary;
+      flash(`Synced: +${s.addedProducts} products, +${s.addedBundles} bundles, stock updated on ${s.stockUpdated} (${s.totalOOS} out of stock)`);
+    }catch(e){
+      flash("Sync failed — is the server running?");
+    }finally{
+      setSyncing(false);
+    }
+  }
+  const SYNC_COOLDOWN_MS = 24*60*60*1000;
+  const syncEligible = !lastSyncAt || (Date.now()-new Date(lastSyncAt).getTime())>=SYNC_COOLDOWN_MS;
+
+  // delete a bundle -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteBundle(b){
-    if(!window.confirm(`Delete "${b.name}"?\n\nIt moves to Trash — you can restore it from there.`)) return;
     setBundles(bundles.filter(x=>x.id!==b.id));
     const entry={kind:"bundle",item:b,at:new Date().toISOString()};
     setTrash(t=>[entry,...t]);
     showUndo(`Deleted "${b.name}"`, ()=>{ setBundles(cur=>[b,...cur]); setTrash(t=>t.filter(e=>e!==entry)); });
   }
-  // delete a product -> trash + undo
+  // delete a product -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteProduct(p){
-    if(!window.confirm(`Delete "${p.name}"?\n\nIt moves to Trash — you can restore it from there.`)) return;
     setProducts(products.filter(x=>x.id!==p.id));
     const entry={kind:"product",item:p,at:new Date().toISOString()};
     setTrash(t=>[entry,...t]);
@@ -95,13 +127,17 @@ function App(){
     flash("Restored");
   }
   // permanently remove a single item from Trash (not recoverable)
-  function deleteFromTrash(entry){
-    if(!window.confirm(`Permanently delete "${entry.item.name}"?\n\nThis can't be undone.`)) return;
+  async function deleteFromTrash(entry){
+    const ok = await askConfirm({title:`Permanently delete "${entry.item.name}"?`,
+      detail:"This can't be undone.", confirmLabel:"Delete permanently"});
+    if(!ok) return;
     setTrash(t=>t.filter(e=>e!==entry));
     flash("Deleted for good");
   }
-  function emptyTrash(){
-    if(!window.confirm(`Permanently delete all ${trash.length} item${trash.length>1?"s":""} in Trash?\n\nThis can't be undone.`)) return;
+  async function emptyTrash(){
+    const ok = await askConfirm({title:`Permanently delete all ${trash.length} item${trash.length>1?"s":""} in Trash?`,
+      detail:"This can't be undone.", confirmLabel:"Empty trash"});
+    if(!ok) return;
     setTrash([]); flash("Trash emptied");
   }
 
@@ -126,9 +162,16 @@ function App(){
   function compute(b){
     let sum=0, missing=false;
     const oosItems=[];
+    // bundle's own sellable stock = least of its active, tracked components —
+    // you can only build as many as your scarcest part allows. null when no
+    // component has trackable stock (nothing to compare).
+    let stock=null;
     b.items.forEach(it=>{ const p=byId[it.productId];
       if(!p||!p.active) missing=true; else sum+=p.price*it.qty;
-      if(p && p.stockTracked && (p.stock||0)<=0) oosItems.push({product:p,qty:it.qty}); });
+      // only an active product's stock counts — an inactive/discontinued item
+      // is already flagged via "missing" above, not as a stock blocker
+      if(p && p.active && p.stockTracked && (p.stock||0)<=0) oosItems.push({product:p,qty:it.qty});
+      if(p && p.active && p.stockTracked){ const s=p.stock||0; stock = stock===null ? s : Math.min(stock,s); } });
     const target=round2(sum);
     const empty = b.items.length===0;
     const priceMismatch = Math.abs(target-(b.storedPrice||0))>0.009;
@@ -142,13 +185,14 @@ function App(){
     // a gift-included bundle isn't "stale" on price either — only if an item is missing.
     const stale = !empty && !skipped && (missing || (priceMismatch && !giftIncluded));
     const hasOOS = oosItems.length>0;
-    return {target,missing,stale,empty,giftIncluded,skipped,priceMismatch,diff:target-(b.storedPrice||0),oosItems,hasOOS};
+    return {target,missing,stale,empty,giftIncluded,skipped,priceMismatch,diff:target-(b.storedPrice||0),oosItems,hasOOS,stock};
   }
 
   if(!ready) return <div style={{padding:40,textAlign:"center",color:"var(--muted)"}} className="serif">Loading from disk…</div>;
 
   const staleList = bundles.map(b=>({b,c:compute(b)})).filter(x=>x.c.stale);
-  const oosList = bundles.map(b=>({b,c:compute(b)})).filter(x=>x.c.hasOOS);
+  const oosList = bundles.map(b=>({b,c:compute(b)})).filter(x=>x.c.hasOOS)
+    .sort((a,b)=>a.b.name.localeCompare(b.b.name));
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce((max,p)=> p.stockUpdatedAt && p.stockUpdatedAt>(max||"") ? p.stockUpdatedAt : max, null);
 
@@ -161,10 +205,15 @@ function App(){
             <div style={{fontSize:11,letterSpacing:3,textTransform:"uppercase",color:"var(--clay)",fontWeight:700}}>catalog ops · local</div>
             <h1 className="serif" style={{fontSize:32,margin:"6px 0 0",fontWeight:600,letterSpacing:-0.5}}>Bundle Price Manager</h1>
           </div>
-          <div style={{fontSize:13,color:"var(--muted)",textAlign:"right"}}>
-            <div><b style={{color:"var(--ink)"}}>{products.length}</b> products · <b style={{color:"var(--ink)"}}>{bundles.length}</b> bundles</div>
-            <div style={{fontSize:11,marginTop:2,color:saving?"var(--amber)":"var(--sage)"}}>{saving?"saving…":"saved to disk ✓"}</div>
-            <div style={{fontSize:11,marginTop:2,color:"var(--muted)"}}>stock {stockUpdatedAt?`synced ${timeAgo(stockUpdatedAt)}`:"never synced"}</div>
+          <div style={{display:"flex",alignItems:"flex-end",gap:14}}>
+            <div style={{fontSize:13,color:"var(--muted)",textAlign:"right"}}>
+              <div><b style={{color:"var(--ink)"}}>{products.length}</b> products · <b style={{color:"var(--ink)"}}>{bundles.length}</b> bundles</div>
+              <div style={{fontSize:11,marginTop:2,color:saving?"var(--amber)":"var(--sage)"}}>{saving?"saving…":"saved to disk ✓"}</div>
+              <div style={{fontSize:11,marginTop:2,color:"var(--muted)"}}>stock {stockUpdatedAt?`synced ${timeAgo(stockUpdatedAt)}`:"never synced"}</div>
+            </div>
+            <button onClick={syncNow} disabled={syncing||!syncEligible} title={!syncEligible?`Last synced ${timeAgo(lastSyncAt)} — available once every 24h`:"Pull new products, new bundle shells, and refresh stock from Shopify"}
+              style={{...btnSec,opacity:(syncing||!syncEligible)?.55:1,cursor:(syncing||!syncEligible)?"default":"pointer"}}>
+              {syncing?"Syncing…":(lastSyncAt?`Sync with Shopify · synced ${timeAgo(lastSyncAt)}`:"Sync with Shopify")}</button>
           </div>
         </header>
         <nav style={{display:"flex",gap:2,margin:"18px 0 0",borderBottom:"1px solid var(--line)",flexWrap:"wrap"}}>
@@ -191,6 +240,8 @@ function App(){
         <button onClick={()=>{undo.restore(); setUndo(null);}} style={{background:"var(--clay)",color:"#fff",
           border:"none",padding:"6px 12px",borderRadius:7,fontWeight:600,cursor:"pointer"}}>Undo</button>
       </div>}
+      {confirmState && <ConfirmModal {...confirmState}
+        onClose={(result)=>{ confirmState.resolve(result); setConfirmState(null); }}/>}
 
       {tab==="worklist" && <Worklist staleList={staleList} bundles={bundles} setBundles={setBundles} flash={flash}
         products={products} compute={compute} byId={byId} onDelete={deleteBundle} onPromote={promoteToProduct} onSkip={skipBundle}/>}
@@ -200,6 +251,32 @@ function App(){
       {tab==="stock" && <StockIssues oosList={oosList} bundles={bundles} setBundles={setBundles} byId={byId} products={products}
         compute={compute} onDelete={deleteBundle} onPromote={promoteToProduct} onSkip={skipBundle}/>}
       {tab==="trash" && <Trash trash={trash} onRestore={restoreFromTrash} onDelete={deleteFromTrash} onEmpty={emptyTrash}/>}
+      </div>
+    </div>
+  );
+}
+
+// in-app replacement for window.confirm — a centered modal matching the rest of
+// the app's look, instead of the browser's native dialog. Escape or a backdrop
+// click cancels, same as clicking Cancel.
+function ConfirmModal({title,detail,confirmLabel,danger,onClose}){
+  useEffect(()=>{
+    const onKey=(e)=>{ if(e.key==="Escape") onClose(false); };
+    window.addEventListener("keydown",onKey);
+    return ()=>window.removeEventListener("keydown",onKey);
+  },[onClose]);
+  return (
+    <div onClick={()=>onClose(false)} style={{position:"fixed",inset:0,zIndex:50,background:"rgba(23,19,17,.45)",
+      display:"grid",placeItems:"center",padding:20,animation:"slideIn .15s ease"}}>
+      <div onClick={e=>e.stopPropagation()} role="alertdialog" aria-modal="true" style={{background:"var(--card)",
+        borderRadius:14,padding:"22px 24px",maxWidth:380,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,.35)"}}>
+        <h3 className="serif" style={{margin:"0 0 8px",fontSize:19,fontWeight:600}}>{title}</h3>
+        {detail && <p style={{margin:"0 0 20px",fontSize:13.5,color:"var(--muted)",lineHeight:1.5}}>{detail}</p>}
+        <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+          <button onClick={()=>onClose(false)} style={btnSec}>Cancel</button>
+          <button onClick={()=>onClose(true)} autoFocus style={{...btnPri,
+            background:danger?"var(--clay)":"var(--ink)"}}>{confirmLabel}</button>
+        </div>
       </div>
     </div>
   );
@@ -343,7 +420,7 @@ function Worklist({staleList,bundles,setBundles,flash,products,compute,byId,onDe
 const CATS = ["plate","bowl","vase","cup","dinner","spread","setting","serving","gift","dessert","marble","table","lamp","wall"];
 function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,onSkip}){
   const [q,setQ]=useState(""); const [openId,setOpenId]=useState(null);
-  const [show,setShow]=useState("all"); // all | empty | filled
+  const [show,setShow]=useState("all"); // all | empty | filled | oos
   const [cat,setCat]=useState(""); // category word
   const [visible,setVisible]=useState(60); // how many rows to show (Load more)
   const active = useMemo(()=>products.filter(p=>p.active),[products]);
@@ -351,14 +428,16 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
     return bundles.filter(b=>{
       if(show==="empty" && b.items.length>0) return false;
       if(show==="filled" && b.items.length===0) return false;
+      if(show==="oos" && !compute(b).hasOOS) return false;
       if(cat && !b.name.toLowerCase().includes(cat)) return false;
       if(!matchText(q, b.name+" "+(b.sku||""))) return false;
       return true;
-    }); },[bundles,q,show,cat]);
+    }); },[bundles,products,q,show,cat]);
   // reset the visible window whenever the filter set changes
   useEffect(()=>{ setVisible(60); },[q,show,cat]);
   const shown = filtered.slice(0,visible);
   const emptyCount = useMemo(()=>bundles.filter(b=>b.items.length===0).length,[bundles]);
+  const oosCount = useMemo(()=>bundles.filter(b=>compute(b).hasOOS).length,[bundles,products]);
   // counts per category word — pills stay visible (and show their count) even at 0 matches.
   // counted within the current "show" sub-filter so the numbers reflect what you'd actually see.
   const catCounts = useMemo(()=>{
@@ -381,7 +460,7 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
         <button onClick={add} style={btnPri}>+ New</button>
       </div>
       <div style={{display:"flex",gap:6,marginBottom:8}}>
-        {[["all",`All (${bundles.length})`],["empty",`Not built yet (${emptyCount})`],["filled",`Built (${bundles.length-emptyCount})`]].map(([k,label])=>(
+        {[["all",`All (${bundles.length})`],["empty",`Not built yet (${emptyCount})`],["filled",`Built (${bundles.length-emptyCount})`],["oos",`Out of stock (${oosCount})`]].map(([k,label])=>(
           <button key={k} onClick={()=>setShow(k)} style={{padding:"6px 12px",borderRadius:999,fontSize:12.5,fontWeight:600,cursor:"pointer",
             border:`1px solid ${show===k?"var(--clay)":"var(--line)"}`,
             background:show===k?"var(--clayDim)":"#fff",color:show===k?"var(--clay)":"var(--muted)"}}>{label}</button>
@@ -422,6 +501,9 @@ function Bundles({bundles,setBundles,products,compute,byId,onDelete,onPromote,on
                   color:"var(--sage)",border:"1px solid var(--sage)",borderRadius:999,padding:"1px 7px",verticalAlign:"middle"}}>skipped</span>}
                 {b.note && <span title={b.note} style={{marginLeft:6,fontSize:12,color:"var(--muted)",verticalAlign:"middle"}}>✎</span>}
               </span>
+              {!c.empty && c.stock!==null && <span style={{fontSize:12.5,fontWeight:600,
+                color:c.stock<=0?"var(--clay)":"var(--muted)"}} title="Sellable stock — the least of its components">
+                {c.stock} in stock</span>}
               <span style={{fontSize:13,color:"var(--muted)"}}>{c.empty?<span style={{color:"var(--amber)"}}>not built yet</span>:(c.missing?"needs item fix":money(c.target))}</span>
               <span style={{color:"var(--muted)",fontSize:12}}>{open?"▾":"▸"}</span>
             </button>
@@ -465,7 +547,7 @@ function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}
           }}/>
         {b.items.length===0 && <div style={{fontSize:13,color:"var(--muted)",fontStyle:"italic"}}>No items yet — use the bar above to add components fast.</div>}
         {b.items.map((it,idx)=>{ const p=byId[it.productId]; const broke=!p||!p.active;
-          const oos = p && p.stockTracked && (p.stock||0)<=0;
+          const oos = p && p.active && p.stockTracked && (p.stock||0)<=0;
           return (
           <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
             <input type="number" min="1" value={it.qty} onChange={e=>{const items=[...b.items];items[idx]={...it,qty:Math.max(1,parseInt(e.target.value)||1)};update(b.id,{items});}}
@@ -485,6 +567,8 @@ function BundleEditor({b,update,byId,products,compute,onDelete,onPromote,onSkip}
       <div style={{background:c.stale?"var(--clayDim)":"var(--sageDim)",borderRadius:9,padding:"12px 14px",
         display:"flex",flexDirection:"column",gap:8}}>
         <div style={vRow}><span style={{color:"var(--muted)"}}>Computed (sum of items)</span><strong>{c.missing?"—":money(c.target)}</strong></div>
+        {c.stock!==null && <div style={vRow}><span style={{color:"var(--muted)"}}>Sellable stock (least component)</span>
+          <strong style={{color:c.stock<=0?"var(--clay)":"var(--ink)"}}>{c.stock}</strong></div>}
         <div style={vRow}><span style={{color:"var(--muted)"}}>Live on Shopify</span>
           <input type="number" value={b.storedPrice}
             onFocus={e=>{liveFocus.current=parseFloat(e.target.value)||0;}}
@@ -597,7 +681,8 @@ function QuickAdd({products,byId,onAdd}){
 function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
   const [q,setQ]=useState("");
   const [visible,setVisible]=useState(100);
-  const [usageFilter,setUsageFilter]=useState("all"); // all | used | unused
+  const [usageFilter,setUsageFilter]=useState("all"); // all | used | unused | oos
+  const isOOS = p=> p.active && p.stockTracked && (p.stock||0)<=0;
   const [expanded,setExpanded]=useState(null); // product id whose bundle list is open
   const priceFocus=useRef(null); // {id,value} captured when a price field gains focus
   // log a product price change on blur, so typing doesn't add an entry per keystroke
@@ -611,6 +696,7 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
   const baseList = useMemo(()=>products.filter(p=>{
     if(usageFilter==="used" && usedCount(p)===0) return false;
     if(usageFilter==="unused" && usedCount(p)>0) return false;
+    if(usageFilter==="oos" && !isOOS(p)) return false;
     return true;
   }),[products,usage,usageFilter]);
   const filtered = useMemo(()=>{ if(!q.trim()) return baseList;
@@ -622,15 +708,14 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
 
   // counts for the filter pills
   const counts = useMemo(()=>{
-    let used=0,unused=0; products.forEach(p=> usedCount(p)>0?used++:unused++);
-    return {all:products.length,used,unused};
+    let used=0,unused=0,oos=0; products.forEach(p=>{ usedCount(p)>0?used++:unused++; if(isOOS(p)) oos++; });
+    return {all:products.length,used,unused,oos};
   },[products,usage]);
   // bulk: deactivate every currently-shown product that isn't in any bundle (with undo)
   const unusedShownActive = filtered.filter(p=>usedCount(p)===0 && p.active);
   const archiveUnused=()=>{
     const ids=new Set(unusedShownActive.map(p=>p.id));
     if(!ids.size) return;
-    if(!window.confirm(`Archive ${ids.size} unused product${ids.size>1?"s":""}?\n\nThey'll be set to Inactive. You can undo right after.`)) return;
     setProducts(products.map(p=> ids.has(p.id)?{...p,active:false}:p));
     showUndo(`Archived ${ids.size} unused product${ids.size>1?"s":""}`,
       ()=>setProducts(cur=>cur.map(p=> ids.has(p.id)?{...p,active:true}:p)));
@@ -643,7 +728,7 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
         <button onClick={add} style={btnPri}>+ New</button>
       </div>
       <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
-        {[["all",`All (${counts.all})`],["used",`In a bundle (${counts.used})`],["unused",`Not in any bundle (${counts.unused})`]].map(([k,label])=>(
+        {[["all",`All (${counts.all})`],["used",`In a bundle (${counts.used})`],["unused",`Not in any bundle (${counts.unused})`],["oos",`Out of stock (${counts.oos})`]].map(([k,label])=>(
           <button key={k} onClick={()=>setUsageFilter(k)} style={{padding:"6px 12px",borderRadius:999,fontSize:12.5,fontWeight:600,cursor:"pointer",
             border:`1px solid ${usageFilter===k?"var(--clay)":"var(--line)"}`,
             background:usageFilter===k?"var(--clayDim)":"#fff",color:usageFilter===k?"var(--clay)":"var(--muted)"}}>{label}</button>
@@ -683,8 +768,8 @@ function Products({products,setProducts,bundles,onDelete,showUndo,flash}){
                   if(Math.abs(to-s.value)>0.009) logPriceChange(p.id,s.value,to); }}
                 style={{border:"1px solid var(--line)",borderRadius:6,padding:"6px 8px",fontSize:14,textAlign:"right"}}/>
               {p.stockTracked
-                ? <span style={{textAlign:"right",fontSize:13,fontWeight:p.stock<=0?700:400,
-                    color:p.stock<=0?"var(--clay)":"var(--ink)"}}>{p.stock}{p.stock<=0?" oos":""}</span>
+                ? <span style={{textAlign:"right",fontSize:13,fontWeight:p.active&&p.stock<=0?700:400,
+                    color:p.active&&p.stock<=0?"var(--clay)":"var(--ink)"}}>{p.stock}{p.active&&p.stock<=0?" oos":""}</span>
                 : <span style={{textAlign:"right",fontSize:13,color:"var(--line)"}} title="Stock not tracked in Shopify">—</span>}
               {used.length>0
                 ? <button onClick={()=>setExpanded(isOpen?null:p.id)}

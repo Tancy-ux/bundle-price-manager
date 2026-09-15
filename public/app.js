@@ -1,3 +1,4 @@
+function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
   useEffect,
@@ -67,8 +68,11 @@ function App() {
   const [tab, setTab] = useState("worklist");
   const [toast, setToast] = useState(null);
   const [undo, setUndo] = useState(null); // {label, restore}
+  const [confirmState, setConfirmState] = useState(null); // {title, detail, confirmLabel, danger, resolve}
   const [saving, setSaving] = useState(false);
   const [ready, setReady] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [syncing, setSyncing] = useState(false);
   const firstLoad = useRef(true);
   useEffect(() => {
     (async () => {
@@ -76,6 +80,7 @@ function App() {
       setProducts(d.products || []);
       setBundles(d.bundles || []);
       setTrash(d.trash || []);
+      setLastSyncAt(d.lastSyncAt || null);
       setReady(true);
     })();
   }, []);
@@ -114,10 +119,56 @@ function App() {
     });
     setTimeout(() => setUndo(u => u && u.label === label ? null : u), 6000);
   };
+  // in-app replacement for window.confirm — returns a Promise<boolean>, resolved
+  // when the user picks a button in <ConfirmModal/> (rendered once, below)
+  const askConfirm = ({
+    title,
+    detail,
+    confirmLabel = "Delete",
+    danger = true
+  }) => new Promise(resolve => setConfirmState({
+    title,
+    detail,
+    confirmLabel,
+    danger,
+    resolve
+  }));
 
-  // delete a bundle -> trash + undo
+  // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
+  // shells (active + no SKU), and refreshes stock on everything, in one call.
+  // Throttled server-side to once/24h; syncEligible below mirrors that for the UI.
+  async function syncNow() {
+    setSyncing(true);
+    try {
+      const r = await fetch("/api/sync", {
+        method: "POST"
+      });
+      const j = await r.json();
+      if (r.status === 429) {
+        const hrs = Math.ceil((j.retryAfterMs || 0) / 3600000);
+        flash(`Already synced — try again in about ${hrs}h`);
+        return;
+      }
+      if (!r.ok) {
+        flash(j.error || "Sync failed");
+        return;
+      }
+      setProducts(j.data.products || []);
+      setBundles(j.data.bundles || []);
+      setLastSyncAt(j.data.lastSyncAt || null);
+      const s = j.summary;
+      flash(`Synced: +${s.addedProducts} products, +${s.addedBundles} bundles, stock updated on ${s.stockUpdated} (${s.totalOOS} out of stock)`);
+    } catch (e) {
+      flash("Sync failed — is the server running?");
+    } finally {
+      setSyncing(false);
+    }
+  }
+  const SYNC_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const syncEligible = !lastSyncAt || Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
+
+  // delete a bundle -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteBundle(b) {
-    if (!window.confirm(`Delete "${b.name}"?\n\nIt moves to Trash — you can restore it from there.`)) return;
     setBundles(bundles.filter(x => x.id !== b.id));
     const entry = {
       kind: "bundle",
@@ -130,9 +181,8 @@ function App() {
       setTrash(t => t.filter(e => e !== entry));
     });
   }
-  // delete a product -> trash + undo
+  // delete a product -> trash + undo (recoverable, so no confirm — just Undo)
   function deleteProduct(p) {
-    if (!window.confirm(`Delete "${p.name}"?\n\nIt moves to Trash — you can restore it from there.`)) return;
     setProducts(products.filter(x => x.id !== p.id));
     const entry = {
       kind: "product",
@@ -151,13 +201,23 @@ function App() {
     flash("Restored");
   }
   // permanently remove a single item from Trash (not recoverable)
-  function deleteFromTrash(entry) {
-    if (!window.confirm(`Permanently delete "${entry.item.name}"?\n\nThis can't be undone.`)) return;
+  async function deleteFromTrash(entry) {
+    const ok = await askConfirm({
+      title: `Permanently delete "${entry.item.name}"?`,
+      detail: "This can't be undone.",
+      confirmLabel: "Delete permanently"
+    });
+    if (!ok) return;
     setTrash(t => t.filter(e => e !== entry));
     flash("Deleted for good");
   }
-  function emptyTrash() {
-    if (!window.confirm(`Permanently delete all ${trash.length} item${trash.length > 1 ? "s" : ""} in Trash?\n\nThis can't be undone.`)) return;
+  async function emptyTrash() {
+    const ok = await askConfirm({
+      title: `Permanently delete all ${trash.length} item${trash.length > 1 ? "s" : ""} in Trash?`,
+      detail: "This can't be undone.",
+      confirmLabel: "Empty trash"
+    });
+    if (!ok) return;
     setTrash([]);
     flash("Trash emptied");
   }
@@ -197,13 +257,23 @@ function App() {
     let sum = 0,
       missing = false;
     const oosItems = [];
+    // bundle's own sellable stock = least of its active, tracked components —
+    // you can only build as many as your scarcest part allows. null when no
+    // component has trackable stock (nothing to compare).
+    let stock = null;
     b.items.forEach(it => {
       const p = byId[it.productId];
       if (!p || !p.active) missing = true;else sum += p.price * it.qty;
-      if (p && p.stockTracked && (p.stock || 0) <= 0) oosItems.push({
+      // only an active product's stock counts — an inactive/discontinued item
+      // is already flagged via "missing" above, not as a stock blocker
+      if (p && p.active && p.stockTracked && (p.stock || 0) <= 0) oosItems.push({
         product: p,
         qty: it.qty
       });
+      if (p && p.active && p.stockTracked) {
+        const s = p.stock || 0;
+        stock = stock === null ? s : Math.min(stock, s);
+      }
     });
     const target = round2(sum);
     const empty = b.items.length === 0;
@@ -228,7 +298,8 @@ function App() {
       priceMismatch,
       diff: target - (b.storedPrice || 0),
       oosItems,
-      hasOOS
+      hasOOS,
+      stock
     };
   }
   if (!ready) return /*#__PURE__*/React.createElement("div", {
@@ -246,7 +317,7 @@ function App() {
   const oosList = bundles.map(b => ({
     b,
     c: compute(b)
-  })).filter(x => x.c.hasOOS);
+  })).filter(x => x.c.hasOOS).sort((a, b) => a.b.name.localeCompare(b.b.name));
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   return /*#__PURE__*/React.createElement("div", {
@@ -290,6 +361,12 @@ function App() {
     }
   }, "Bundle Price Manager")), /*#__PURE__*/React.createElement("div", {
     style: {
+      display: "flex",
+      alignItems: "flex-end",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       fontSize: 13,
       color: "var(--muted)",
       textAlign: "right"
@@ -314,7 +391,16 @@ function App() {
       marginTop: 2,
       color: "var(--muted)"
     }
-  }, "stock ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced"))), /*#__PURE__*/React.createElement("nav", {
+  }, "stock ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced")), /*#__PURE__*/React.createElement("button", {
+    onClick: syncNow,
+    disabled: syncing || !syncEligible,
+    title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 24h` : "Pull new products, new bundle shells, and refresh stock from Shopify",
+    style: {
+      ...btnSec,
+      opacity: syncing || !syncEligible ? .55 : 1,
+      cursor: syncing || !syncEligible ? "default" : "pointer"
+    }
+  }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("nav", {
     style: {
       display: "flex",
       gap: 2,
@@ -386,7 +472,12 @@ function App() {
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, "Undo")), tab === "worklist" && /*#__PURE__*/React.createElement(Worklist, {
+  }, "Undo")), confirmState && /*#__PURE__*/React.createElement(ConfirmModal, _extends({}, confirmState, {
+    onClose: result => {
+      confirmState.resolve(result);
+      setConfirmState(null);
+    }
+  })), tab === "worklist" && /*#__PURE__*/React.createElement(Worklist, {
     staleList: staleList,
     bundles: bundles,
     setBundles: setBundles,
@@ -433,6 +524,80 @@ function App() {
     onDelete: deleteFromTrash,
     onEmpty: emptyTrash
   })));
+}
+
+// in-app replacement for window.confirm — a centered modal matching the rest of
+// the app's look, instead of the browser's native dialog. Escape or a backdrop
+// click cancels, same as clicking Cancel.
+function ConfirmModal({
+  title,
+  detail,
+  confirmLabel,
+  danger,
+  onClose
+}) {
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === "Escape") onClose(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: () => onClose(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 50,
+      background: "rgba(23,19,17,.45)",
+      display: "grid",
+      placeItems: "center",
+      padding: 20,
+      animation: "slideIn .15s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "alertdialog",
+    "aria-modal": "true",
+    style: {
+      background: "var(--card)",
+      borderRadius: 14,
+      padding: "22px 24px",
+      maxWidth: 380,
+      width: "100%",
+      boxShadow: "0 20px 60px rgba(0,0,0,.35)"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      margin: "0 0 8px",
+      fontSize: 19,
+      fontWeight: 600
+    }
+  }, title), detail && /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 20px",
+      fontSize: 13.5,
+      color: "var(--muted)",
+      lineHeight: 1.5
+    }
+  }, detail), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => onClose(false),
+    style: btnSec
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onClose(true),
+    autoFocus: true,
+    style: {
+      ...btnPri,
+      background: danger ? "var(--clay)" : "var(--ink)"
+    }
+  }, confirmLabel))));
 }
 function Worklist({
   staleList,
@@ -849,7 +1014,7 @@ function Bundles({
 }) {
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState(null);
-  const [show, setShow] = useState("all"); // all | empty | filled
+  const [show, setShow] = useState("all"); // all | empty | filled | oos
   const [cat, setCat] = useState(""); // category word
   const [visible, setVisible] = useState(60); // how many rows to show (Load more)
   const active = useMemo(() => products.filter(p => p.active), [products]);
@@ -857,17 +1022,19 @@ function Bundles({
     return bundles.filter(b => {
       if (show === "empty" && b.items.length > 0) return false;
       if (show === "filled" && b.items.length === 0) return false;
+      if (show === "oos" && !compute(b).hasOOS) return false;
       if (cat && !b.name.toLowerCase().includes(cat)) return false;
       if (!matchText(q, b.name + " " + (b.sku || ""))) return false;
       return true;
     });
-  }, [bundles, q, show, cat]);
+  }, [bundles, products, q, show, cat]);
   // reset the visible window whenever the filter set changes
   useEffect(() => {
     setVisible(60);
   }, [q, show, cat]);
   const shown = filtered.slice(0, visible);
   const emptyCount = useMemo(() => bundles.filter(b => b.items.length === 0).length, [bundles]);
+  const oosCount = useMemo(() => bundles.filter(b => compute(b).hasOOS).length, [bundles, products]);
   // counts per category word — pills stay visible (and show their count) even at 0 matches.
   // counted within the current "show" sub-filter so the numbers reflect what you'd actually see.
   const catCounts = useMemo(() => {
@@ -921,7 +1088,7 @@ function Bundles({
       gap: 6,
       marginBottom: 8
     }
-  }, [["all", `All (${bundles.length})`], ["empty", `Not built yet (${emptyCount})`], ["filled", `Built (${bundles.length - emptyCount})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["all", `All (${bundles.length})`], ["empty", `Not built yet (${emptyCount})`], ["filled", `Built (${bundles.length - emptyCount})`], ["oos", `Out of stock (${oosCount})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setShow(k),
     style: {
@@ -1073,7 +1240,14 @@ function Bundles({
         color: "var(--muted)",
         verticalAlign: "middle"
       }
-    }, "✎")), /*#__PURE__*/React.createElement("span", {
+    }, "✎")), !c.empty && c.stock !== null && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: c.stock <= 0 ? "var(--clay)" : "var(--muted)"
+      },
+      title: "Sellable stock — the least of its components"
+    }, c.stock, " in stock"), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 13,
         color: "var(--muted)"
@@ -1189,7 +1363,7 @@ function BundleEditor({
   }, "No items yet — use the bar above to add components fast."), b.items.map((it, idx) => {
     const p = byId[it.productId];
     const broke = !p || !p.active;
-    const oos = p && p.stockTracked && (p.stock || 0) <= 0;
+    const oos = p && p.active && p.stockTracked && (p.stock || 0) <= 0;
     return /*#__PURE__*/React.createElement("div", {
       key: idx,
       style: {
@@ -1280,7 +1454,17 @@ function BundleEditor({
     style: {
       color: "var(--muted)"
     }
-  }, "Computed (sum of items)"), /*#__PURE__*/React.createElement("strong", null, c.missing ? "—" : money(c.target))), /*#__PURE__*/React.createElement("div", {
+  }, "Computed (sum of items)"), /*#__PURE__*/React.createElement("strong", null, c.missing ? "—" : money(c.target))), c.stock !== null && /*#__PURE__*/React.createElement("div", {
+    style: vRow
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, "Sellable stock (least component)"), /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: c.stock <= 0 ? "var(--clay)" : "var(--ink)"
+    }
+  }, c.stock)), /*#__PURE__*/React.createElement("div", {
     style: vRow
   }, /*#__PURE__*/React.createElement("span", {
     style: {
@@ -1577,7 +1761,8 @@ function Products({
 }) {
   const [q, setQ] = useState("");
   const [visible, setVisible] = useState(100);
-  const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused
+  const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused | oos
+  const isOOS = p => p.active && p.stockTracked && (p.stock || 0) <= 0;
   const [expanded, setExpanded] = useState(null); // product id whose bundle list is open
   const priceFocus = useRef(null); // {id,value} captured when a price field gains focus
   // log a product price change on blur, so typing doesn't add an entry per keystroke
@@ -1600,6 +1785,7 @@ function Products({
   const baseList = useMemo(() => products.filter(p => {
     if (usageFilter === "used" && usedCount(p) === 0) return false;
     if (usageFilter === "unused" && usedCount(p) > 0) return false;
+    if (usageFilter === "oos" && !isOOS(p)) return false;
     return true;
   }), [products, usage, usageFilter]);
   const filtered = useMemo(() => {
@@ -1629,12 +1815,17 @@ function Products({
   // counts for the filter pills
   const counts = useMemo(() => {
     let used = 0,
-      unused = 0;
-    products.forEach(p => usedCount(p) > 0 ? used++ : unused++);
+      unused = 0,
+      oos = 0;
+    products.forEach(p => {
+      usedCount(p) > 0 ? used++ : unused++;
+      if (isOOS(p)) oos++;
+    });
     return {
       all: products.length,
       used,
-      unused
+      unused,
+      oos
     };
   }, [products, usage]);
   // bulk: deactivate every currently-shown product that isn't in any bundle (with undo)
@@ -1642,7 +1833,6 @@ function Products({
   const archiveUnused = () => {
     const ids = new Set(unusedShownActive.map(p => p.id));
     if (!ids.size) return;
-    if (!window.confirm(`Archive ${ids.size} unused product${ids.size > 1 ? "s" : ""}?\n\nThey'll be set to Inactive. You can undo right after.`)) return;
     setProducts(products.map(p => ids.has(p.id) ? {
       ...p,
       active: false
@@ -1674,7 +1864,7 @@ function Products({
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, [["all", `All (${counts.all})`], ["used", `In a bundle (${counts.used})`], ["unused", `Not in any bundle (${counts.unused})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["all", `All (${counts.all})`], ["used", `In a bundle (${counts.used})`], ["unused", `Not in any bundle (${counts.unused})`], ["oos", `Out of stock (${counts.oos})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setUsageFilter(k),
     style: {
@@ -1829,10 +2019,10 @@ function Products({
       style: {
         textAlign: "right",
         fontSize: 13,
-        fontWeight: p.stock <= 0 ? 700 : 400,
-        color: p.stock <= 0 ? "var(--clay)" : "var(--ink)"
+        fontWeight: p.active && p.stock <= 0 ? 700 : 400,
+        color: p.active && p.stock <= 0 ? "var(--clay)" : "var(--ink)"
       }
-    }, p.stock, p.stock <= 0 ? " oos" : "") : /*#__PURE__*/React.createElement("span", {
+    }, p.stock, p.active && p.stock <= 0 ? " oos" : "") : /*#__PURE__*/React.createElement("span", {
       style: {
         textAlign: "right",
         fontSize: 13,

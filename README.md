@@ -198,19 +198,60 @@ API token needs the **`read_inventory`** scope in addition to `read_products`
 change).
 
 Once applied, the app shows:
-- An **Out of stock** tab listing every bundle blocked by a zero-stock
-  component, and which component(s) those are.
+- An **Out of stock** tab (sorted A–Z) listing every bundle blocked by a
+  zero-stock component, and which component(s) those are. An "Out of stock"
+  filter pill on both the **Bundles** and **Products** tabs finds the same
+  thing without leaving those views.
 - An `oos` tag on affected bundles in the **Bundles** list, and a red
   "out of stock" badge on the specific component when you open a bundle.
+  Each bundle also shows its own sellable stock — the least of its active,
+  tracked components, since that's what actually limits how many you can
+  build.
 - A **Stock** column on the **Products** tab for each product's own count
   (`—` means Shopify isn't tracking inventory for that item, so it's never
-  flagged as a blocker).
+  flagged as a blocker). A discontinued (inactive) product is never counted
+  as a stock blocker either — it's already flagged separately as missing.
 
 `.github/workflows/fetch-stock.yml` runs this automatically every 4 hours
 (`--apply`, since it only ever touches a stock number — safe to run
 unattended) using the same repository secrets as the product sync workflow.
 Trigger it manually anytime from the **Actions** tab → *Fetch Shopify stock* →
 **Run workflow**.
+
+## Adding bundles Shopify doesn't know are bundles
+
+Shopify has no "bundle" concept the app can read — every bundle here is
+built by hand. But on this store, a combo/packaged listing usually shows up
+as an **active product with no SKU** (a real standalone product almost always
+has one). `scripts/import-bundle-shells.js` uses that pattern: it adds each
+matching Shopify listing as an **empty bundle shell** — name and current
+price, zero components — so it lands in the same "not built yet" state as a
+bundle you started yourself, ready for you to add its real components.
+
+```
+npm run import-bundle-shells              dry run
+npm run import-bundle-shells -- --apply   writes the new (empty) bundles live
+```
+
+Only ever **adds** bundles — never touches an existing bundle or product.
+Skips anything whose name already matches an existing bundle or product, and
+excludes obvious non-bundles (gift cards, vouchers, partial-payment/test
+listings) by name.
+
+## One-click sync
+
+The **"Sync with Shopify"** button in the app header runs all three of the
+above in a single pass — new products, new bundle shells, and a stock
+refresh — with one Shopify fetch and one write. Throttled to **once every
+24 hours**, enforced by the server (`/api/sync`), not just the button, so
+it's safe even if the endpoint is hit directly.
+
+For the hosted app, it needs `SHOPIFY_STORE` and `SHOPIFY_ADMIN_TOKEN` added
+to the Vercel project's **Environment Variables** (same two values as your
+local `.env`) — without them the button fails with a clear "Shopify not
+configured" message rather than doing anything unexpected. Locally, it works
+through `npm start` as long as `.env` has those two values (server.js loads
+`.env` itself for this route; no other local behavior needs it).
 
 ## Later: connecting to Shopify
 

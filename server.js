@@ -9,11 +9,25 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { fetchShopifyCatalog, computeSync } from "./lib/shopifySync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
+
+// optional, dependency-free .env loader — only fills in vars that aren't
+// already set, and does nothing if the file doesn't exist (basic local use
+// needs no .env at all; this just lets SHOPIFY_* reach the /api/sync route)
+function loadDotEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+  }
+}
+loadDotEnv();
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -63,6 +77,40 @@ app.put("/api/data", (req, res) => {
   }
   const saved = writeData({ products, bundles, trash: Array.isArray(trash) ? trash : [] });
   res.json({ ok: true, updatedAt: saved.updatedAt });
+});
+
+const SYNC_THROTTLE_MS = 24 * 60 * 60 * 1000;
+
+app.post("/api/sync", async (req, res) => {
+  try {
+    const store = process.env.SHOPIFY_STORE;
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+    if (!store || !token) {
+      return res.status(500).json({
+        error: "Shopify not configured — set SHOPIFY_STORE and SHOPIFY_ADMIN_TOKEN in .env",
+      });
+    }
+
+    const base = readData();
+    if (base.lastSyncAt) {
+      const elapsed = Date.now() - new Date(base.lastSyncAt).getTime();
+      if (elapsed < SYNC_THROTTLE_MS) {
+        return res.status(429).json({
+          error: "throttled",
+          lastSyncAt: base.lastSyncAt,
+          retryAfterMs: SYNC_THROTTLE_MS - elapsed,
+        });
+      }
+    }
+
+    const variants = await fetchShopifyCatalog({ store, token });
+    const { merged, summary } = computeSync(base, variants);
+    const saved = writeData(merged);
+    res.json({ ok: true, summary, data: saved });
+  } catch (e) {
+    console.error("sync error:", e);
+    res.status(500).json({ error: "sync error", detail: String(e?.message || e) });
+  }
 });
 
 const PORT = process.env.PORT || 4321;
