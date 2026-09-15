@@ -572,7 +572,6 @@ function App() {
     setProducts: setProducts,
     bundles: bundles,
     onDelete: deleteProduct,
-    showUndo: showUndo,
     flash: flash,
     stickyTop: headerH
   }), tab === "whereused" && /*#__PURE__*/React.createElement(WhereUsed, {
@@ -1097,6 +1096,15 @@ function Bundles({
   const [openId, setOpenId] = useState(null);
   const [show, setShow] = useState("all"); // all | empty | filled | oos | dup | single
   const [cat, setCat] = useState(""); // category word
+  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
+  const toggleSort = col => {
+    if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
+  };
+  const sortArrow = col => sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "";
   const [visible, setVisible] = useState(60); // how many rows to show (Load more)
   const active = useMemo(() => products.filter(p => p.active), [products]);
   // marble-vase/lush bundles are a separate silo — every other filter (all,
@@ -1116,11 +1124,32 @@ function Bundles({
       return true;
     });
   }, [normalBundles, singleBundles, products, q, show, cat]);
+  const sorted = useMemo(() => {
+    if (!sortBy) return filtered;
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const ca = compute(a),
+        cb = compute(b);
+      if (sortBy === "price") {
+        const av = ca.giftIncluded ? a.storedPrice || 0 : ca.target;
+        const bv = cb.giftIncluded ? b.storedPrice || 0 : cb.target;
+        return sortDir === "asc" ? av - bv : bv - av;
+      }
+      // stock: bundles with no trackable component sink to the bottom either way
+      const av = ca.stock,
+        bv = cb.stock;
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return sortDir === "asc" ? av - bv : bv - av;
+    });
+    return arr;
+  }, [filtered, products, sortBy, sortDir]);
   // reset the visible window whenever the filter set changes
   useEffect(() => {
     setVisible(60);
-  }, [q, show, cat]);
-  const shown = filtered.slice(0, visible);
+  }, [q, show, cat, sortBy, sortDir]);
+  const shown = sorted.slice(0, visible);
   const emptyCount = useMemo(() => normalBundles.filter(b => b.items.length === 0).length, [normalBundles]);
   const oosCount = useMemo(() => normalBundles.filter(b => compute(b).hasOOS).length, [normalBundles, products]);
   const dupCount = useMemo(() => normalBundles.filter(b => compute(b).dupName).length, [normalBundles]);
@@ -1259,7 +1288,52 @@ function Bundles({
       setCat("");
     },
     style: btnSec
-  }, "Clear filters")), /*#__PURE__*/React.createElement("div", {
+  }, "Clear filters")), filtered.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "0 14px",
+      marginBottom: 4,
+      fontSize: 11,
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+      color: "var(--muted)",
+      fontWeight: 700
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 8,
+      flexShrink: 0
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1
+    }
+  }, "Bundle"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 90,
+      textAlign: "right",
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("stock"),
+    title: "Sort by sellable stock"
+  }, "Stock", sortArrow("stock")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 90,
+      textAlign: "right",
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("price"),
+    title: "Sort by price"
+  }, "Price", sortArrow("price")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 12,
+      flexShrink: 0
+    }
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -1360,15 +1434,21 @@ function Bundles({
         color: "var(--muted)",
         verticalAlign: "middle"
       }
-    }, "✎")), !c.empty && c.stock !== null && /*#__PURE__*/React.createElement("span", {
+    }, "✎")), /*#__PURE__*/React.createElement("span", {
       style: {
+        width: 90,
+        flexShrink: 0,
+        textAlign: "right",
         fontSize: 12.5,
         fontWeight: 600,
-        color: c.stock <= 0 ? "var(--clay)" : "var(--muted)"
+        color: c.stock !== null && c.stock <= 0 ? "var(--clay)" : "var(--muted)"
       },
-      title: "Sellable stock — each component's stock ÷ qty needed, then the least of those"
-    }, c.stock, " in stock"), /*#__PURE__*/React.createElement("span", {
+      title: c.stock !== null ? "Sellable stock — each component's stock ÷ qty needed, then the least of those" : undefined
+    }, !c.empty && c.stock !== null ? `${c.stock} in stock` : ""), /*#__PURE__*/React.createElement("span", {
       style: {
+        width: 90,
+        flexShrink: 0,
+        textAlign: "right",
         fontSize: 13,
         color: "var(--muted)"
       }
@@ -1884,13 +1964,21 @@ function Products({
   setProducts,
   bundles,
   onDelete,
-  showUndo,
   flash,
   stickyTop
 }) {
   const [q, setQ] = useState("");
   const [visible, setVisible] = useState(100);
   const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused | oos | atelier
+  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
+  const toggleSort = col => {
+    if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
+  };
+  const sortArrow = col => sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "";
   const isOOS = p => p.active && p.stockTracked && (p.stock || 0) <= 0;
   const normalProducts = useMemo(() => products.filter(p => !isMarbleAtelier(p.name)), [products]);
   const atelierProducts = useMemo(() => products.filter(p => isMarbleAtelier(p.name)), [products]);
@@ -1917,16 +2005,35 @@ function Products({
     if (usageFilter === "used" && usedCount(p) === 0) return false;
     if (usageFilter === "unused" && usedCount(p) > 0) return false;
     if (usageFilter === "oos" && !isOOS(p)) return false;
+    if (usageFilter === "archived" && p.active) return false;
     return true;
   }), [normalProducts, atelierProducts, usage, usageFilter]);
   const filtered = useMemo(() => {
     if (!q.trim()) return baseList;
     return baseList.filter(p => matchText(q, p.name + " " + (p.sku || "")));
   }, [baseList, q]);
+  const sorted = useMemo(() => {
+    if (!sortBy) return filtered;
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      if (sortBy === "price") {
+        return sortDir === "asc" ? a.price - b.price : b.price - a.price;
+      }
+      // stock: products where Shopify isn't tracking inventory have no
+      // value to sort by, so they always sink to the bottom either way
+      const av = a.stockTracked ? a.stock || 0 : null;
+      const bv = b.stockTracked ? b.stock || 0 : null;
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return sortDir === "asc" ? av - bv : bv - av;
+    });
+    return arr;
+  }, [filtered, sortBy, sortDir]);
   useEffect(() => {
     setVisible(100);
-  }, [q, usageFilter]);
-  const shown = filtered.slice(0, visible);
+  }, [q, usageFilter, sortBy, sortDir]);
+  const shown = sorted.slice(0, visible);
   const update = (id, patch) => setProducts(products.map(p => p.id === id ? {
     ...p,
     ...patch
@@ -1952,28 +2059,16 @@ function Products({
       usedCount(p) > 0 ? used++ : unused++;
       if (isOOS(p)) oos++;
     });
+    const archived = normalProducts.filter(p => !p.active).length;
     return {
       all: normalProducts.length,
       used,
       unused,
       oos,
+      archived,
       atelier: atelierProducts.length
     };
   }, [normalProducts, atelierProducts, usage]);
-  // bulk: deactivate every currently-shown product that isn't in any bundle (with undo)
-  const unusedShownActive = filtered.filter(p => usedCount(p) === 0 && p.active);
-  const archiveUnused = () => {
-    const ids = new Set(unusedShownActive.map(p => p.id));
-    if (!ids.size) return;
-    setProducts(products.map(p => ids.has(p.id) ? {
-      ...p,
-      active: false
-    } : p));
-    showUndo(`Archived ${ids.size} unused product${ids.size > 1 ? "s" : ""}`, () => setProducts(cur => cur.map(p => ids.has(p.id) ? {
-      ...p,
-      active: true
-    } : p)));
-  };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
@@ -2004,7 +2099,7 @@ function Products({
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, [["all", `All (${counts.all})`, false], ["used", `In a bundle (${counts.used})`, false], ["unused", `Not in any bundle (${counts.unused})`, false], ["oos", `Out of stock (${counts.oos})`, counts.oos === 0], ["atelier", `Marble Atelier (${counts.atelier})`, counts.atelier === 0]].map(([k, label, hideAtZero]) => {
+  }, [["all", `All (${counts.all})`, false], ["used", `In a bundle (${counts.used})`, false], ["unused", `Not in any bundle (${counts.unused})`, false], ["oos", `Out of stock (${counts.oos})`, counts.oos === 0], ["archived", `Archived (${counts.archived})`, counts.archived === 0], ["atelier", `Marble Atelier (${counts.atelier})`, counts.atelier === 0]].map(([k, label, hideAtZero]) => {
     if (hideAtZero && usageFilter !== k) return null;
     return /*#__PURE__*/React.createElement("button", {
       key: k,
@@ -2020,16 +2115,7 @@ function Products({
         color: usageFilter === k ? "var(--clay)" : "var(--muted)"
       }
     }, label);
-  }), unusedShownActive.length > 0 && /*#__PURE__*/React.createElement("button", {
-    onClick: archiveUnused,
-    style: {
-      ...btnSec,
-      marginLeft: "auto",
-      color: "var(--clay)",
-      borderColor: "var(--clayDim)"
-    },
-    title: "Set every active product here that isn't used in any bundle to Inactive"
-  }, "Archive ", unusedShownActive.length, " unused →"))), /*#__PURE__*/React.createElement("p", {
+  }))), /*#__PURE__*/React.createElement("p", {
     style: {
       ...note,
       marginTop: 10
@@ -2082,13 +2168,21 @@ function Products({
     }
   }, /*#__PURE__*/React.createElement("span", null, "Product"), /*#__PURE__*/React.createElement("span", null, "SKU"), /*#__PURE__*/React.createElement("span", {
     style: {
-      textAlign: "right"
-    }
-  }, "Price"), /*#__PURE__*/React.createElement("span", {
+      textAlign: "right",
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("price"),
+    title: "Sort by price"
+  }, "Price", sortArrow("price")), /*#__PURE__*/React.createElement("span", {
     style: {
-      textAlign: "right"
-    }
-  }, "Stock"), /*#__PURE__*/React.createElement("span", {
+      textAlign: "right",
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("stock"),
+    title: "Sort by stock"
+  }, "Stock", sortArrow("stock")), /*#__PURE__*/React.createElement("span", {
     style: {
       textAlign: "center"
     }
