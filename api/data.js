@@ -2,11 +2,16 @@
 // Stores the whole {products, bundles, trash} document as one JSON value in
 // Upstash Redis, mirroring what server.js does with data/data.json locally.
 //
+// PUT is diff-based, not a full replace — see lib/mergeData.js for why: it
+// lets two people with the app open at once edit different items without
+// one person's save silently overwriting the other's.
+//
 // Env vars (set by the Upstash + Vercel integration, either naming works):
 //   UPSTASH_REDIS_REST_URL   / KV_REST_API_URL
 //   UPSTASH_REDIS_REST_TOKEN / KV_REST_API_TOKEN
 
 import { Redis } from "@upstash/redis";
+import { mergeUpserts, mergeTrash, mergeSet } from "../lib/mergeData.js";
 
 let _redis;
 function getRedis() {
@@ -39,34 +44,32 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PUT") {
-      const { products, bundles, trash, excludedSkus, excludedBundleNames } = req.body || {};
-      if (!Array.isArray(products) || !Array.isArray(bundles)) {
-        return res.status(400).json({ error: "products and bundles must be arrays" });
+      const { productsDiff, bundlesDiff, trashDiff, excludedSkusDiff, excludedBundleNamesDiff } = req.body || {};
+      if (!productsDiff || !bundlesDiff) {
+        return res.status(400).json({ error: "productsDiff and bundlesDiff are required" });
       }
+
+      // read fresh — not the client's idea of what was there, so a
+      // concurrent edit from someone else isn't silently discarded
+      const prev = (await redis.get(KEY)) || EMPTY;
 
       // rolling backup of the previous version (last 20 kept)
-      const prev = await redis.get(KEY);
-      if (prev) {
-        await redis.lpush(
-          BACKUPS,
-          JSON.stringify({ at: new Date().toISOString(), data: prev })
-        );
-        await redis.ltrim(BACKUPS, 0, MAX_BACKUPS - 1);
-      }
+      await redis.lpush(BACKUPS, JSON.stringify({ at: new Date().toISOString(), data: prev }));
+      await redis.ltrim(BACKUPS, 0, MAX_BACKUPS - 1);
 
-      // merge onto the previous doc so fields the client doesn't manage
-      // (lastSyncAt, from the Shopify sync button) survive a normal autosave
       const saved = {
-        ...(prev || {}),
-        products,
-        bundles,
-        trash: Array.isArray(trash) ? trash : [],
-        excludedSkus: Array.isArray(excludedSkus) ? excludedSkus : (prev?.excludedSkus || []),
-        excludedBundleNames: Array.isArray(excludedBundleNames) ? excludedBundleNames : (prev?.excludedBundleNames || []),
+        ...prev,
+        products: mergeUpserts(prev.products || [], productsDiff.upserts, productsDiff.deletes),
+        bundles: mergeUpserts(prev.bundles || [], bundlesDiff.upserts, bundlesDiff.deletes),
+        trash: mergeTrash(prev.trash || [], trashDiff?.upserts, trashDiff?.deletes),
+        excludedSkus: mergeSet(prev.excludedSkus, excludedSkusDiff?.added, excludedSkusDiff?.removed),
+        excludedBundleNames: mergeSet(prev.excludedBundleNames, excludedBundleNamesDiff?.added, excludedBundleNamesDiff?.removed),
         updatedAt: new Date().toISOString(),
       };
       await redis.set(KEY, saved);
-      return res.status(200).json({ ok: true, updatedAt: saved.updatedAt });
+      // return the full merged doc so the client can adopt it — this is
+      // also how a client picks up anyone else's concurrent changes
+      return res.status(200).json({ ok: true, data: saved });
     }
 
     res.setHeader("Allow", "GET, PUT");

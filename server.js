@@ -9,7 +9,8 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { fetchShopifyCatalog, computeSync } from "./lib/shopifySync.js";
+import { fetchShopifyCatalog, computeSync, pushVariantPrice, pushHistory } from "./lib/shopifySync.js";
+import { mergeUpserts, mergeTrash, mergeSet } from "./lib/mergeData.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
@@ -70,23 +71,26 @@ app.get("/api/data", (req, res) => {
   res.json(readData());
 });
 
+// diff-based, not a full replace — see lib/mergeData.js for why: this is
+// what lets two people with the app open at once edit different items
+// without one person's save silently overwriting the other's.
 app.put("/api/data", (req, res) => {
-  const { products, bundles, trash, excludedSkus, excludedBundleNames } = req.body || {};
-  if (!Array.isArray(products) || !Array.isArray(bundles)) {
-    return res.status(400).json({ error: "products and bundles must be arrays" });
+  const { productsDiff, bundlesDiff, trashDiff, excludedSkusDiff, excludedBundleNamesDiff } = req.body || {};
+  if (!productsDiff || !bundlesDiff) {
+    return res.status(400).json({ error: "productsDiff and bundlesDiff are required" });
   }
-  // merge onto the previous doc so fields the client doesn't manage
-  // (lastSyncAt, from the Shopify sync button) survive a normal autosave
   const prev = readData();
   const saved = writeData({
     ...prev,
-    products,
-    bundles,
-    trash: Array.isArray(trash) ? trash : [],
-    excludedSkus: Array.isArray(excludedSkus) ? excludedSkus : (prev.excludedSkus || []),
-    excludedBundleNames: Array.isArray(excludedBundleNames) ? excludedBundleNames : (prev.excludedBundleNames || []),
+    products: mergeUpserts(prev.products || [], productsDiff.upserts, productsDiff.deletes),
+    bundles: mergeUpserts(prev.bundles || [], bundlesDiff.upserts, bundlesDiff.deletes),
+    trash: mergeTrash(prev.trash || [], trashDiff?.upserts, trashDiff?.deletes),
+    excludedSkus: mergeSet(prev.excludedSkus, excludedSkusDiff?.added, excludedSkusDiff?.removed),
+    excludedBundleNames: mergeSet(prev.excludedBundleNames, excludedBundleNamesDiff?.added, excludedBundleNamesDiff?.removed),
   });
-  res.json({ ok: true, updatedAt: saved.updatedAt });
+  // return the full merged doc so the client can adopt it — this is also
+  // how a client picks up anyone else's concurrent changes
+  res.json({ ok: true, data: saved });
 });
 
 const SYNC_THROTTLE_MS = 24 * 60 * 60 * 1000;
@@ -120,6 +124,45 @@ app.post("/api/sync", async (req, res) => {
   } catch (e) {
     console.error("sync error:", e);
     res.status(500).json({ error: "sync error", detail: String(e?.message || e) });
+  }
+});
+
+app.post("/api/push-price", async (req, res) => {
+  try {
+    const { kind, id, price } = req.body || {};
+    if ((kind !== "product" && kind !== "bundle") || !id || typeof price !== "number") {
+      return res.status(400).json({ error: "kind (product|bundle), id, and numeric price are required" });
+    }
+    const store = process.env.SHOPIFY_STORE;
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+
+    // first read: just to find the variant id to push to — not used to build
+    // the write below, same reasoning as api/push-price.js (hosted)
+    const preCheck = readData();
+    const preList = kind === "product" ? preCheck.products : preCheck.bundles;
+    const preItem = (preList || []).find((x) => x.id === id);
+    if (!preItem) return res.status(404).json({ error: `${kind} not found` });
+    if (!preItem.shopifyVariantId) {
+      return res.status(400).json({ error: "Not linked to a Shopify variant yet — run a sync first" });
+    }
+
+    await pushVariantPrice({ store, token, variantId: preItem.shopifyVariantId, price });
+
+    // second read, right before writing — picks up anything that changed
+    // elsewhere during the Shopify call
+    const base = readData();
+    const list = kind === "product" ? base.products : base.bundles;
+    const item = (list || []).find((x) => x.id === id) || preItem;
+    const priceField = kind === "product" ? "price" : "storedPrice";
+    const from = item[priceField] || 0;
+    const updatedItem = { ...item, [priceField]: price, history: pushHistory(item, from, price) };
+
+    writeData({ ...base, [kind === "product" ? "products" : "bundles"]: mergeUpserts(list || [], [updatedItem], []) });
+
+    res.json({ ok: true, item: updatedItem });
+  } catch (e) {
+    console.error("push-price error:", e);
+    res.status(500).json({ error: "push-price error", detail: String(e?.message || e) });
   }
 });
 

@@ -51,23 +51,50 @@ async function apiGet() {
   const r = await fetch("/api/data");
   return r.json();
 }
-async function apiPut(
-  products,
-  bundles,
-  trash,
-  excludedSkus,
-  excludedBundleNames,
-) {
+
+// Diff-based save: only what actually changed since the last confirmed save
+// goes over the wire, and the server merges it onto whatever's currently
+// stored (not onto what this tab thinks was there). Without this, two
+// people with the app open at once could silently overwrite each other's
+// edits — see lib/mergeData.js (server side) for the full explanation.
+function diffById(baseline, current) {
+  const baseMap = new Map(baseline.map((x) => [x.id, x]));
+  const curMap = new Map(current.map((x) => [x.id, x]));
+  const upserts = [];
+  curMap.forEach((item, id) => {
+    const prev = baseMap.get(id);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) upserts.push(item);
+  });
+  const deletes = [];
+  baseMap.forEach((_, id) => { if (!curMap.has(id)) deletes.push(id); });
+  return { upserts, deletes };
+}
+// trash entries have no id of their own — keyed by the nested item's id
+function diffTrash(baseline, current) {
+  const baseMap = new Map(baseline.map((x) => [x.item?.id, x]));
+  const curMap = new Map(current.map((x) => [x.item?.id, x]));
+  const upserts = [];
+  curMap.forEach((item, id) => {
+    const prev = baseMap.get(id);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) upserts.push(item);
+  });
+  const deletes = [];
+  baseMap.forEach((_, id) => { if (!curMap.has(id)) deletes.push(id); });
+  return { upserts, deletes };
+}
+function diffSet(baseline, current) {
+  const baseSet = new Set(baseline || []), curSet = new Set(current || []);
+  return {
+    added: [...curSet].filter((x) => !baseSet.has(x)),
+    removed: [...baseSet].filter((x) => !curSet.has(x)),
+  };
+}
+
+async function apiPutDiff(diff) {
   const r = await fetch("/api/data", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      products,
-      bundles,
-      trash: trash || [],
-      excludedSkus: excludedSkus || [],
-      excludedBundleNames: excludedBundleNames || [],
-    }),
+    body: JSON.stringify(diff),
   });
   return r.json();
 }
@@ -89,6 +116,9 @@ function App() {
   const [lastSyncAt, setLastSyncAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const firstLoad = useRef(true);
+  // last confirmed-saved state, used to compute what actually changed —
+  // see diffById/apiPutDiff above and lib/mergeData.js for why
+  const baselineRef = useRef({ products: [], bundles: [], trash: [], excludedSkus: [], excludedBundleNames: [] });
   // measure the sticky header+nav so each tab's own search/filter row can
   // stick right below it too, instead of scrolling away with the list
   const headerRef = useRef(null);
@@ -105,29 +135,69 @@ function App() {
   useEffect(() => {
     (async () => {
       const d = await apiGet();
-      setProducts(d.products || []);
-      setBundles(d.bundles || []);
-      setTrash(d.trash || []);
-      setExcludedSkus(d.excludedSkus || []);
-      setExcludedBundleNames(d.excludedBundleNames || []);
+      const initial = {
+        products: d.products || [],
+        bundles: d.bundles || [],
+        trash: d.trash || [],
+        excludedSkus: d.excludedSkus || [],
+        excludedBundleNames: d.excludedBundleNames || [],
+      };
+      setProducts(initial.products);
+      setBundles(initial.bundles);
+      setTrash(initial.trash);
+      setExcludedSkus(initial.excludedSkus);
+      setExcludedBundleNames(initial.excludedBundleNames);
+      baselineRef.current = initial;
       setLastSyncAt(d.lastSyncAt || null);
       setReady(true);
     })();
   }, []);
 
-  // autosave to disk on any change (skip the initial load)
+  // autosave on any change (skip the initial load) — diffs against the last
+  // confirmed-saved baseline, sends only what changed, and adopts whatever
+  // the server sends back (which may include someone else's concurrent
+  // edits merged in too)
   useEffect(() => {
     if (!ready) return;
     if (firstLoad.current) {
       firstLoad.current = false;
       return;
     }
+    const baseline = baselineRef.current;
+    const productsDiff = diffById(baseline.products, products);
+    const bundlesDiff = diffById(baseline.bundles, bundles);
+    const trashDiff = diffTrash(baseline.trash, trash);
+    const excludedSkusDiff = diffSet(baseline.excludedSkus, excludedSkus);
+    const excludedBundleNamesDiff = diffSet(baseline.excludedBundleNames, excludedBundleNames);
+    const nothingChanged =
+      !productsDiff.upserts.length && !productsDiff.deletes.length &&
+      !bundlesDiff.upserts.length && !bundlesDiff.deletes.length &&
+      !trashDiff.upserts.length && !trashDiff.deletes.length &&
+      !excludedSkusDiff.added.length && !excludedSkusDiff.removed.length &&
+      !excludedBundleNamesDiff.added.length && !excludedBundleNamesDiff.removed.length;
+    if (nothingChanged) return;
     let cancel = false;
     setSaving(true);
-    apiPut(products, bundles, trash, excludedSkus, excludedBundleNames)
-      .then(() => {
-        if (!cancel) {
-          setSaving(false);
+    apiPutDiff({ productsDiff, bundlesDiff, trashDiff, excludedSkusDiff, excludedBundleNamesDiff })
+      .then((res) => {
+        if (cancel) return;
+        setSaving(false);
+        if (res && res.ok && res.data) {
+          const d = res.data;
+          const merged = {
+            products: d.products || [],
+            bundles: d.bundles || [],
+            trash: d.trash || [],
+            excludedSkus: d.excludedSkus || [],
+            excludedBundleNames: d.excludedBundleNames || [],
+          };
+          baselineRef.current = merged;
+          setProducts(merged.products);
+          setBundles(merged.bundles);
+          setTrash(merged.trash);
+          setExcludedSkus(merged.excludedSkus);
+          setExcludedBundleNames(merged.excludedBundleNames);
+          if (d.lastSyncAt !== undefined) setLastSyncAt(d.lastSyncAt || null);
         }
       })
       .catch(() => {
@@ -178,8 +248,19 @@ function App() {
         flash(j.error || "Sync failed");
         return;
       }
-      setProducts(j.data.products || []);
-      setBundles(j.data.bundles || []);
+      const merged = {
+        products: j.data.products || [],
+        bundles: j.data.bundles || [],
+        trash: j.data.trash || [],
+        excludedSkus: j.data.excludedSkus || [],
+        excludedBundleNames: j.data.excludedBundleNames || [],
+      };
+      baselineRef.current = merged; // otherwise the next autosave would diff against a stale pre-sync baseline
+      setProducts(merged.products);
+      setBundles(merged.bundles);
+      setTrash(merged.trash);
+      setExcludedSkus(merged.excludedSkus);
+      setExcludedBundleNames(merged.excludedBundleNames);
       setLastSyncAt(j.data.lastSyncAt || null);
       const s = j.summary;
       flash(
@@ -195,6 +276,40 @@ function App() {
   const syncEligible =
     !lastSyncAt ||
     Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
+
+  // push one item's price straight to its linked Shopify variant. Only ever
+  // sends {id, price} to Shopify — see lib/shopifySync.js's pushVariantPrice.
+  // Confirmed first since this is the only thing in the app that writes to
+  // the live store rather than just this app's own data.
+  async function pushPriceToShopify(kind, item) {
+    const priceField = kind === "product" ? "price" : "storedPrice";
+    const price = item[priceField] || 0;
+    const ok = await askConfirm({
+      title: `Push ${money(price)} to Shopify?`,
+      detail: `Updates the live price for "${item.name}" on your Shopify store. Nothing else about it changes.`,
+      confirmLabel: "Push to Shopify",
+    });
+    if (!ok) return;
+    try {
+      const r = await fetch("/api/push-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, id: item.id, price }),
+      });
+      const j = await r.json();
+      if (!r.ok) { flash(j.error || "Push failed"); return; }
+      if (kind === "product") {
+        setProducts((cur) => cur.map((p) => (p.id === item.id ? j.item : p)));
+        baselineRef.current = { ...baselineRef.current, products: baselineRef.current.products.map((p) => (p.id === item.id ? j.item : p)) };
+      } else {
+        setBundles((cur) => cur.map((b) => (b.id === item.id ? j.item : b)));
+        baselineRef.current = { ...baselineRef.current, bundles: baselineRef.current.bundles.map((b) => (b.id === item.id ? j.item : b)) };
+      }
+      flash(`Pushed ${money(price)} to Shopify for "${item.name}"`);
+    } catch (e) {
+      flash("Push failed — is the server running?");
+    }
+  }
 
   // deletion also excludes the item from future Shopify syncs (by SKU for
   // products, by name for bundles) so it never silently comes back. Restoring
@@ -636,6 +751,7 @@ function App() {
             onDelete={deleteBundle}
             onPromote={promoteToProduct}
             onSkip={skipBundle}
+            pushPrice={pushPriceToShopify}
           />
         )}
         {tab === "bundles" && (
@@ -649,6 +765,7 @@ function App() {
             onPromote={promoteToProduct}
             onSkip={skipBundle}
             stickyTop={headerH}
+            pushPrice={pushPriceToShopify}
           />
         )}
         {tab === "products" && (
@@ -659,6 +776,7 @@ function App() {
             onDelete={deleteProduct}
             flash={flash}
             stickyTop={headerH}
+            pushPrice={pushPriceToShopify}
           />
         )}
         {tab === "whereused" && (
@@ -675,6 +793,7 @@ function App() {
             onDelete={deleteBundle}
             onPromote={promoteToProduct}
             onSkip={skipBundle}
+            pushPrice={pushPriceToShopify}
           />
         )}
         {tab === "trash" && (
@@ -777,6 +896,7 @@ function Worklist({
   onDelete,
   onPromote,
   onSkip,
+  pushPrice,
 }) {
   const [view, setView] = useState("todo"); // todo | history
   const [openId, setOpenId] = useState(null); // expanded row for inline editing
@@ -1159,6 +1279,7 @@ function Worklist({
                     onDelete={onDelete}
                     onPromote={onPromote}
                     onSkip={onSkip}
+                    pushPrice={pushPrice}
                   />
                 </div>
               )}
@@ -1229,6 +1350,7 @@ function Worklist({
                     onDelete={onDelete}
                     onPromote={onPromote}
                     onSkip={onSkip}
+                    pushPrice={pushPrice}
                   />
                 </div>
               )}
@@ -1279,6 +1401,7 @@ function Bundles({
   onPromote,
   onSkip,
   stickyTop,
+  pushPrice,
 }) {
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -1554,10 +1677,12 @@ function Bundles({
                 overflow: "hidden",
               }}
             >
+              <div style={{ display: "flex", alignItems: "center" }}>
               <button
                 onClick={() => setOpenId(open ? null : b.id)}
                 style={{
-                  width: "100%",
+                  flex: 1,
+                  minWidth: 0,
                   display: "flex",
                   alignItems: "center",
                   gap: 10,
@@ -1691,6 +1816,14 @@ function Bundles({
                   {open ? "▾" : "▸"}
                 </span>
               </button>
+              <button
+                onClick={() => onDelete(b)}
+                title="Delete bundle"
+                style={{ ...xBtn, marginRight: 10, flexShrink: 0 }}
+              >
+                ✕
+              </button>
+              </div>
               {open && (
                 <BundleEditor
                   b={b}
@@ -1701,6 +1834,7 @@ function Bundles({
                   onDelete={onDelete}
                   onPromote={onPromote}
                   onSkip={onSkip}
+                  pushPrice={pushPrice}
                 />
               )}
             </div>
@@ -1729,6 +1863,7 @@ function BundleEditor({
   onDelete,
   onPromote,
   onSkip,
+  pushPrice,
 }) {
   const c = compute(b);
   // price edits log to history; the old value is captured on focus so typing
@@ -1922,31 +2057,52 @@ function BundleEditor({
         )}
         <div style={vRow}>
           <span style={{ color: "var(--muted)" }}>Live on Shopify</span>
-          <input
-            type="number"
-            value={b.storedPrice}
-            onFocus={(e) => {
-              liveFocus.current = parseFloat(e.target.value) || 0;
-            }}
-            onChange={(e) =>
-              update(b.id, { storedPrice: parseFloat(e.target.value) || 0 })
-            }
-            onBlur={(e) => {
-              const from = liveFocus.current;
-              liveFocus.current = null;
-              const to = parseFloat(e.target.value) || 0;
-              if (from != null && Math.abs(to - from) > 0.009)
-                update(b.id, { storedPrice: to, ...logPatch(from, to) });
-            }}
-            style={{
-              width: 100,
-              padding: "6px 8px",
-              borderRadius: 6,
-              border: "1px solid var(--line)",
-              fontSize: 14,
-              textAlign: "right",
-            }}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="number"
+              value={b.storedPrice}
+              onFocus={(e) => {
+                liveFocus.current = parseFloat(e.target.value) || 0;
+              }}
+              onChange={(e) =>
+                update(b.id, { storedPrice: parseFloat(e.target.value) || 0 })
+              }
+              onBlur={(e) => {
+                const from = liveFocus.current;
+                liveFocus.current = null;
+                const to = parseFloat(e.target.value) || 0;
+                if (from != null && Math.abs(to - from) > 0.009)
+                  update(b.id, { storedPrice: to, ...logPatch(from, to) });
+              }}
+              style={{
+                width: 100,
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--line)",
+                fontSize: 14,
+                textAlign: "right",
+              }}
+            />
+            {b.shopifyVariantId && pushPrice && (
+              <button
+                onClick={() => pushPrice("bundle", b)}
+                title="Push this price straight to your live Shopify store"
+                style={{
+                  background: "var(--ink)",
+                  color: "var(--paper)",
+                  border: "none",
+                  borderRadius: 7,
+                  padding: "5px 10px",
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Push price to Shopify
+              </button>
+            )}
+          </div>
         </div>
         {!c.missing && c.priceMismatch && (
           <label
@@ -2249,6 +2405,7 @@ function Products({
   onDelete,
   flash,
   stickyTop,
+  pushPrice,
 }) {
   const [q, setQ] = useState("");
   const [visible, setVisible] = useState(100);
@@ -2545,34 +2702,58 @@ function Products({
                     color: "var(--muted)",
                   }}
                 />
-                <input
-                  type="number"
-                  value={p.price}
-                  onFocus={(e) => {
-                    priceFocus.current = {
-                      id: p.id,
-                      value: parseFloat(e.target.value) || 0,
-                    };
-                  }}
-                  onChange={(e) =>
-                    update(p.id, { price: parseFloat(e.target.value) || 0 })
-                  }
-                  onBlur={(e) => {
-                    const s = priceFocus.current;
-                    priceFocus.current = null;
-                    if (!s || s.id !== p.id) return;
-                    const to = parseFloat(e.target.value) || 0;
-                    if (Math.abs(to - s.value) > 0.009)
-                      logPriceChange(p.id, s.value, to);
-                  }}
-                  style={{
-                    border: "1px solid var(--line)",
-                    borderRadius: 6,
-                    padding: "6px 8px",
-                    fontSize: 14,
-                    textAlign: "right",
-                  }}
-                />
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input
+                    type="number"
+                    value={p.price}
+                    onFocus={(e) => {
+                      priceFocus.current = {
+                        id: p.id,
+                        value: parseFloat(e.target.value) || 0,
+                      };
+                    }}
+                    onChange={(e) =>
+                      update(p.id, { price: parseFloat(e.target.value) || 0 })
+                    }
+                    onBlur={(e) => {
+                      const s = priceFocus.current;
+                      priceFocus.current = null;
+                      if (!s || s.id !== p.id) return;
+                      const to = parseFloat(e.target.value) || 0;
+                      if (Math.abs(to - s.value) > 0.009)
+                        logPriceChange(p.id, s.value, to);
+                    }}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      border: "1px solid var(--line)",
+                      borderRadius: 6,
+                      padding: "6px 6px",
+                      fontSize: 14,
+                      textAlign: "right",
+                    }}
+                  />
+                  {p.shopifyVariantId && pushPrice && (
+                    <button
+                      onClick={() => pushPrice("product", p)}
+                      title="Push this price straight to your live Shopify store"
+                      style={{
+                        border: "none",
+                        background: "var(--ink)",
+                        borderRadius: 6,
+                        padding: "5px 7px",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--paper)",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      🛍️ Update
+                    </button>
+                  )}
+                </div>
                 {p.stockTracked ? (
                   <span
                     style={{
@@ -2880,6 +3061,7 @@ function StockIssues({
   onDelete,
   onPromote,
   onSkip,
+  pushPrice,
 }) {
   const [openId, setOpenId] = useState(null);
   const update = (id, patch) =>
@@ -3000,6 +3182,7 @@ function StockIssues({
                   onDelete={onDelete}
                   onPromote={onPromote}
                   onSkip={onSkip}
+                  pushPrice={pushPrice}
                 />
               )}
             </div>
@@ -3208,7 +3391,7 @@ const wlGrid = {
 const numCell = { textAlign: "right", fontSize: 14 };
 const prodGrid = {
   display: "grid",
-  gridTemplateColumns: "1fr 120px 90px 66px 80px 84px 30px",
+  gridTemplateColumns: "1fr 120px 166px 66px 80px 84px 30px",
   gap: 8,
 };
 
