@@ -81,6 +81,17 @@ function App() {
   const [lastSyncAt, setLastSyncAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const firstLoad = useRef(true);
+  // measure the sticky header+nav so each tab's own search/filter row can
+  // stick right below it too, instead of scrolling away with the list
+  const headerRef = useRef(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    if (!headerRef.current) return;
+    const measure = () => setHeaderH(headerRef.current.getBoundingClientRect().height);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [ready, tab]);
   useEffect(() => {
     (async () => {
       const d = await apiGet();
@@ -378,11 +389,12 @@ function App() {
   const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   return /*#__PURE__*/React.createElement("div", {
     style: {
-      maxWidth: 880,
+      maxWidth: 980,
       margin: "0 auto",
       padding: "0 20px 60px"
     }
   }, /*#__PURE__*/React.createElement("div", {
+    ref: headerRef,
     style: {
       position: "sticky",
       top: 0,
@@ -552,14 +564,16 @@ function App() {
     byId: byId,
     onDelete: deleteBundle,
     onPromote: promoteToProduct,
-    onSkip: skipBundle
+    onSkip: skipBundle,
+    stickyTop: headerH
   }), tab === "products" && /*#__PURE__*/React.createElement(Products, {
     products: products,
     setProducts: setProducts,
     bundles: bundles,
     onDelete: deleteProduct,
     showUndo: showUndo,
-    flash: flash
+    flash: flash,
+    stickyTop: headerH
   }), tab === "whereused" && /*#__PURE__*/React.createElement(WhereUsed, {
     bundles: bundles,
     products: products,
@@ -1058,6 +1072,15 @@ function Worklist({
   })));
 }
 const CATS = ["plate", "bowl", "vase", "cup", "dinner", "spread", "setting", "serving", "gift", "dessert", "marble", "table", "lamp", "wall"];
+// bundles that are really just one product wearing a "bundle" hat — this
+// store's marble-vase/tissue-box/tray listings, the "Diverge" vase line, and
+// the "Lush" line are almost always a single component once built, not worth
+// the usual per-item triage. Whole-word match so e.g. "Blush" doesn't
+// false-positive on "lush".
+const isSingleItemCandidate = name => {
+  const words = norm(name).split(" ");
+  return words.includes("lush") || words.includes("diverge") || words.includes("marble") && words.includes("vase");
+};
 function Bundles({
   bundles,
   setBundles,
@@ -1066,16 +1089,23 @@ function Bundles({
   byId,
   onDelete,
   onPromote,
-  onSkip
+  onSkip,
+  stickyTop
 }) {
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState(null);
-  const [show, setShow] = useState("all"); // all | empty | filled | oos | dup
+  const [show, setShow] = useState("all"); // all | empty | filled | oos | dup | single
   const [cat, setCat] = useState(""); // category word
   const [visible, setVisible] = useState(60); // how many rows to show (Load more)
   const active = useMemo(() => products.filter(p => p.active), [products]);
+  // marble-vase/lush bundles are a separate silo — every other filter (all,
+  // not built yet, built, out of stock, duplicate names) only ever looks at
+  // "normal" bundles; they only appear once you explicitly pick their own pill.
+  const normalBundles = useMemo(() => bundles.filter(b => !isSingleItemCandidate(b.name)), [bundles]);
+  const singleBundles = useMemo(() => bundles.filter(b => isSingleItemCandidate(b.name)), [bundles]);
   const filtered = useMemo(() => {
-    return bundles.filter(b => {
+    const pool = show === "single" ? singleBundles : normalBundles;
+    return pool.filter(b => {
       if (show === "empty" && b.items.length > 0) return false;
       if (show === "filled" && b.items.length === 0) return false;
       if (show === "oos" && !compute(b).hasOOS) return false;
@@ -1084,19 +1114,21 @@ function Bundles({
       if (!matchText(q, b.name + " " + (b.sku || ""))) return false;
       return true;
     });
-  }, [bundles, products, q, show, cat]);
+  }, [normalBundles, singleBundles, products, q, show, cat]);
   // reset the visible window whenever the filter set changes
   useEffect(() => {
     setVisible(60);
   }, [q, show, cat]);
   const shown = filtered.slice(0, visible);
-  const emptyCount = useMemo(() => bundles.filter(b => b.items.length === 0).length, [bundles]);
-  const oosCount = useMemo(() => bundles.filter(b => compute(b).hasOOS).length, [bundles, products]);
-  const dupCount = useMemo(() => bundles.filter(b => compute(b).dupName).length, [bundles]);
+  const emptyCount = useMemo(() => normalBundles.filter(b => b.items.length === 0).length, [normalBundles]);
+  const oosCount = useMemo(() => normalBundles.filter(b => compute(b).hasOOS).length, [normalBundles, products]);
+  const dupCount = useMemo(() => normalBundles.filter(b => compute(b).dupName).length, [normalBundles]);
+  const singleCount = singleBundles.length;
   // counts per category word — pills stay visible (and show their count) even at 0 matches.
   // counted within the current "show" sub-filter so the numbers reflect what you'd actually see.
   const catCounts = useMemo(() => {
-    const base = bundles.filter(b => {
+    const pool = show === "single" ? singleBundles : normalBundles;
+    const base = pool.filter(b => {
       if (show === "empty" && b.items.length > 0) return false;
       if (show === "filled" && b.items.length === 0) return false;
       return true;
@@ -1109,7 +1141,7 @@ function Bundles({
       all: base.length,
       ...m
     };
-  }, [bundles, show]);
+  }, [normalBundles, singleBundles, show]);
   const update = (id, patch) => setBundles(bundles.map(b => b.id === id ? {
     ...b,
     ...patch
@@ -1128,6 +1160,15 @@ function Bundles({
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
+      position: "sticky",
+      top: stickyTop || 0,
+      zIndex: 10,
+      background: "var(--paper)",
+      paddingTop: 2,
+      paddingBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       gap: 10,
       marginBottom: 8
@@ -1144,26 +1185,31 @@ function Bundles({
     style: {
       display: "flex",
       gap: 6,
-      marginBottom: 8
+      marginBottom: 8,
+      flexWrap: "wrap"
     }
-  }, [["all", `All (${bundles.length})`], ["empty", `Not built yet (${emptyCount})`], ["filled", `Built (${bundles.length - emptyCount})`], ["oos", `Out of stock (${oosCount})`], ["dup", `Duplicate names (${dupCount})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    onClick: () => setShow(k),
-    style: {
-      padding: "6px 12px",
-      borderRadius: 999,
-      fontSize: 12.5,
-      fontWeight: 600,
-      cursor: "pointer",
-      border: `1px solid ${show === k ? "var(--clay)" : "var(--line)"}`,
-      background: show === k ? "var(--clayDim)" : "#fff",
-      color: show === k ? "var(--clay)" : "var(--muted)"
-    }
-  }, label))), /*#__PURE__*/React.createElement("div", {
+  }, [["all", `All (${normalBundles.length})`, false], ["empty", `Not built yet (${emptyCount})`, false], ["filled", `Built (${normalBundles.length - emptyCount})`, false], ["oos", `Out of stock (${oosCount})`, oosCount === 0], ["dup", `Duplicate names (${dupCount})`, dupCount === 0], ["single", `Marble vase / Lush / Diverge (${singleCount})`, singleCount === 0]].map(([k, label, hideAtZero]) => {
+    // status/candidate pills hide themselves when there's nothing to show —
+    // no point cluttering the bar with "(0)" — but stay visible if selected
+    if (hideAtZero && show !== k) return null;
+    return /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => setShow(k),
+      style: {
+        padding: "6px 12px",
+        borderRadius: 999,
+        fontSize: 12.5,
+        fontWeight: 600,
+        cursor: "pointer",
+        border: `1px solid ${show === k ? "var(--clay)" : "var(--line)"}`,
+        background: show === k ? "var(--clayDim)" : "#fff",
+        color: show === k ? "var(--clay)" : "var(--muted)"
+      }
+    }, label);
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
-      marginBottom: 10,
       flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("button", {
@@ -1179,8 +1225,11 @@ function Bundles({
       onClick: () => setCat(cat === w ? "" : w),
       style: catPill(cat === w)
     }, w, " (", n, ")");
-  })), /*#__PURE__*/React.createElement("p", {
-    style: note
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      ...note,
+      marginTop: 10
+    }
   }, filtered.length, " match", filtered.length === 1 ? "" : "es", filtered.length > shown.length ? ` · showing ${shown.length}` : ""), filtered.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
@@ -1827,7 +1876,8 @@ function Products({
   bundles,
   onDelete,
   showUndo,
-  flash
+  flash,
+  stickyTop
 }) {
   const [q, setQ] = useState("");
   const [visible, setVisible] = useState(100);
@@ -1914,6 +1964,15 @@ function Products({
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
+      position: "sticky",
+      top: stickyTop || 0,
+      zIndex: 10,
+      background: "var(--paper)",
+      paddingTop: 2,
+      paddingBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       gap: 10,
       marginBottom: 8
@@ -1930,24 +1989,26 @@ function Products({
     style: {
       display: "flex",
       gap: 6,
-      marginBottom: 8,
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, [["all", `All (${counts.all})`], ["used", `In a bundle (${counts.used})`], ["unused", `Not in any bundle (${counts.unused})`], ["oos", `Out of stock (${counts.oos})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    onClick: () => setUsageFilter(k),
-    style: {
-      padding: "6px 12px",
-      borderRadius: 999,
-      fontSize: 12.5,
-      fontWeight: 600,
-      cursor: "pointer",
-      border: `1px solid ${usageFilter === k ? "var(--clay)" : "var(--line)"}`,
-      background: usageFilter === k ? "var(--clayDim)" : "#fff",
-      color: usageFilter === k ? "var(--clay)" : "var(--muted)"
-    }
-  }, label)), unusedShownActive.length > 0 && /*#__PURE__*/React.createElement("button", {
+  }, [["all", `All (${counts.all})`, false], ["used", `In a bundle (${counts.used})`, false], ["unused", `Not in any bundle (${counts.unused})`, false], ["oos", `Out of stock (${counts.oos})`, counts.oos === 0]].map(([k, label, hideAtZero]) => {
+    if (hideAtZero && usageFilter !== k) return null;
+    return /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => setUsageFilter(k),
+      style: {
+        padding: "6px 12px",
+        borderRadius: 999,
+        fontSize: 12.5,
+        fontWeight: 600,
+        cursor: "pointer",
+        border: `1px solid ${usageFilter === k ? "var(--clay)" : "var(--line)"}`,
+        background: usageFilter === k ? "var(--clayDim)" : "#fff",
+        color: usageFilter === k ? "var(--clay)" : "var(--muted)"
+      }
+    }, label);
+  }), unusedShownActive.length > 0 && /*#__PURE__*/React.createElement("button", {
     onClick: archiveUnused,
     style: {
       ...btnSec,
@@ -1956,8 +2017,11 @@ function Products({
       borderColor: "var(--clayDim)"
     },
     title: "Set every active product here that isn't used in any bundle to Inactive"
-  }, "Archive ", unusedShownActive.length, " unused →")), /*#__PURE__*/React.createElement("p", {
-    style: note
+  }, "Archive ", unusedShownActive.length, " unused →"))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      ...note,
+      marginTop: 10
+    }
   }, filtered.length, " match", filtered.length === 1 ? "" : "es", filtered.length > shown.length ? ` · showing first ${shown.length}` : "", " · edit a price and every bundle using it updates"), filtered.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
