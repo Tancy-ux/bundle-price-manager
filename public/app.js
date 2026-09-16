@@ -116,6 +116,12 @@ function App() {
   const [excludedSkus, setExcludedSkus] = useState([]);
   const [excludedBundleNames, setExcludedBundleNames] = useState([]);
   const [tab, setTab] = useState("worklist");
+  // set when jumping from a bundle's component to Products, so it opens
+  // pre-searched to that exact item instead of the full list
+  const [productJumpQuery, setProductJumpQuery] = useState("");
+  // set when jumping from a product's "in bundles" pill back to Bundles, so
+  // it opens pre-searched to (and with) that exact bundle expanded
+  const [bundleJumpTarget, setBundleJumpTarget] = useState(null); // {id, name}
   const [toast, setToast] = useState(null);
   const [undo, setUndo] = useState(null); // {label, restore}
   const [confirmState, setConfirmState] = useState(null); // {title, detail, confirmLabel, danger, resolve}
@@ -338,6 +344,23 @@ function App() {
     } catch (e) {
       flash("Push failed — is the server running?");
     }
+  }
+
+  // jump from a bundle's component straight to that product in Products,
+  // pre-searched so it's the only (or top) match — no manual re-search needed
+  function jumpToProduct(p) {
+    setProductJumpQuery(p.sku || p.name);
+    setTab("products");
+  }
+
+  // jump from a product's "in bundles" pill back to that specific bundle —
+  // lands on Needs Updating if it's actually stale there, since that's
+  // where you'd want to act on it; otherwise the Bundles tab
+  function jumpToBundle(u) {
+    const b = bundles.find(x => x.id === u.id);
+    const isStale = b ? compute(b).stale : false;
+    setBundleJumpTarget(u);
+    setTab(isStale ? "worklist" : "bundles");
   }
 
   // deletion also excludes the item from future Shopify syncs (by SKU for
@@ -632,7 +655,11 @@ function App() {
     }
   }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
-    onClick: () => setTab(k),
+    onClick: () => {
+      setTab(k);
+      if (k === "products") setProductJumpQuery("");
+      if (k === "worklist" || k === "bundles") setBundleJumpTarget(null);
+    },
     style: {
       background: "none",
       border: "none",
@@ -710,7 +737,9 @@ function App() {
     onDelete: deleteBundle,
     onPromote: promoteToProduct,
     onSkip: skipBundle,
-    pushPrice: pushPriceToShopify
+    pushPrice: pushPriceToShopify,
+    onJumpToProduct: jumpToProduct,
+    initialOpenBundle: bundleJumpTarget
   }), tab === "bundles" && /*#__PURE__*/React.createElement(Bundles, {
     bundles: bundles,
     setBundles: setBundles,
@@ -721,7 +750,9 @@ function App() {
     onPromote: promoteToProduct,
     onSkip: skipBundle,
     stickyTop: headerH,
-    pushPrice: pushPriceToShopify
+    pushPrice: pushPriceToShopify,
+    onJumpToProduct: jumpToProduct,
+    initialOpenBundle: bundleJumpTarget
   }), tab === "products" && /*#__PURE__*/React.createElement(Products, {
     products: products,
     setProducts: setProducts,
@@ -729,7 +760,9 @@ function App() {
     onDelete: deleteProduct,
     flash: flash,
     stickyTop: headerH,
-    pushPrice: pushPriceToShopify
+    pushPrice: pushPriceToShopify,
+    initialQuery: productJumpQuery,
+    onJumpToBundle: jumpToBundle
   }), tab === "whereused" && /*#__PURE__*/React.createElement(WhereUsed, {
     bundles: bundles,
     products: products,
@@ -744,7 +777,8 @@ function App() {
     onDelete: deleteBundle,
     onPromote: promoteToProduct,
     onSkip: skipBundle,
-    pushPrice: pushPriceToShopify
+    pushPrice: pushPriceToShopify,
+    onJumpToProduct: jumpToProduct
   }), tab === "trash" && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
@@ -837,10 +871,13 @@ function Worklist({
   onDelete,
   onPromote,
   onSkip,
-  pushPrice
+  pushPrice,
+  onJumpToProduct,
+  initialOpenBundle
 }) {
   const [view, setView] = useState("todo"); // todo | history
-  const [openId, setOpenId] = useState(null); // expanded row for inline editing
+  // expanded row for inline editing — pre-opens the bundle jumped in from
+  const [openId, setOpenId] = useState(initialOpenBundle?.id || null);
   const update = (id, patch) => setBundles(bundles.map(b => b.id === id ? {
     ...b,
     ...patch
@@ -1162,7 +1199,8 @@ function Worklist({
       onDelete: onDelete,
       onPromote: onPromote,
       onSkip: onSkip,
-      pushPrice: pushPrice
+      pushPrice: pushPrice,
+      onJumpToProduct: onJumpToProduct
     })));
   }), broken.map(({
     b
@@ -1227,7 +1265,8 @@ function Worklist({
       onDelete: onDelete,
       onPromote: onPromote,
       onSkip: onSkip,
-      pushPrice: pushPrice
+      pushPrice: pushPrice,
+      onJumpToProduct: onJumpToProduct
     })));
   })));
 }
@@ -1251,11 +1290,20 @@ function Bundles({
   onPromote,
   onSkip,
   stickyTop,
-  pushPrice
+  pushPrice,
+  onJumpToProduct,
+  initialOpenBundle
 }) {
-  const [q, setQ] = useState("");
-  const [openId, setOpenId] = useState(null);
-  const [show, setShow] = useState("all"); // all | empty | filled | oos | dup | single
+  const [q, setQ] = useState(initialOpenBundle?.name || "");
+  const [openId, setOpenId] = useState(initialOpenBundle?.id || null);
+  // all | empty | filled | oos | dup | single — jumping in needs to land on
+  // "single" instead of "all" when the target bundle lives in that silo,
+  // or it'd show no matches
+  const [show, setShow] = useState(() => {
+    if (!initialOpenBundle) return "all";
+    const b = bundles.find(x => x.id === initialOpenBundle.id);
+    return b && isSingleItemCandidate(b.name) ? "single" : "all";
+  });
   const [cat, setCat] = useState(""); // category word
   const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
@@ -1645,7 +1693,8 @@ function Bundles({
       onDelete: onDelete,
       onPromote: onPromote,
       onSkip: onSkip,
-      pushPrice: pushPrice
+      pushPrice: pushPrice,
+      onJumpToProduct: onJumpToProduct
     }));
   })), filtered.length > shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1667,7 +1716,8 @@ function BundleEditor({
   onDelete,
   onPromote,
   onSkip,
-  pushPrice
+  pushPrice,
+  onJumpToProduct
 }) {
   const c = compute(b);
   // price edits log to history; the old value is captured on focus so typing
@@ -1782,7 +1832,14 @@ function BundleEditor({
         fontSize: 14,
         color: broke ? "var(--clay)" : "var(--ink)"
       }
-    }, p ? p.name : "(missing product)", broke && p ? " (inactive)" : "", oos && /*#__PURE__*/React.createElement("span", {
+    }, p ? p.name : "(missing product)", p && onJumpToProduct && /*#__PURE__*/React.createElement("button", {
+      onClick: () => onJumpToProduct(p),
+      title: `Edit "${p.name}" in Products`,
+      style: {
+        ...xBtn,
+        marginLeft: 4
+      }
+    }, "↗"), broke && p ? " (inactive)" : "", oos && /*#__PURE__*/React.createElement("span", {
       style: {
         marginLeft: 7,
         fontSize: 10,
@@ -2163,11 +2220,20 @@ function Products({
   onDelete,
   flash,
   stickyTop,
-  pushPrice
+  pushPrice,
+  initialQuery,
+  onJumpToBundle
 }) {
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery || "");
   const [visible, setVisible] = useState(100);
-  const [usageFilter, setUsageFilter] = useState("all"); // all | used | unused | oos | atelier
+  // all | used | unused | oos | atelier — jumping in from a bundle's
+  // component needs to land on "atelier" instead of "all" when that's
+  // where the target product actually lives, or it'd show no matches
+  const [usageFilter, setUsageFilter] = useState(() => {
+    if (!initialQuery) return "all";
+    const match = products.find(p => p.sku && p.sku === initialQuery || p.name === initialQuery);
+    return match && isMarbleAtelier(match.name) ? "atelier" : "all";
+  });
   const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = col => {
@@ -2180,7 +2246,13 @@ function Products({
   const isOOS = p => p.active && p.stockTracked && (p.stock || 0) <= 0;
   const normalProducts = useMemo(() => products.filter(p => !isMarbleAtelier(p.name)), [products]);
   const atelierProducts = useMemo(() => products.filter(p => isMarbleAtelier(p.name)), [products]);
-  const [expanded, setExpanded] = useState(null); // product id whose bundle list is open
+  // product id whose bundle list is open — auto-open the jumped-to product's,
+  // so "which bundles use this" is visible immediately, no extra click
+  const [expanded, setExpanded] = useState(() => {
+    if (!initialQuery) return null;
+    const match = products.find(p => p.sku && p.sku === initialQuery || p.name === initialQuery);
+    return match ? match.id : null;
+  });
   const priceFocus = useRef(null); // {id,value} captured when a price field gains focus
   // log a product price change on blur, so typing doesn't add an entry per keystroke
   const logPriceChange = (id, from, to) => setProducts(cur => cur.map(p => p.id === id ? {
@@ -2192,6 +2264,7 @@ function Products({
     const m = {};
     bundles.forEach(b => b.items.forEach(it => {
       (m[it.productId] = m[it.productId] || []).push({
+        id: b.id,
         name: b.name,
         sku: b.sku
       });
@@ -2534,15 +2607,18 @@ function Products({
         flexWrap: "wrap",
         gap: 6
       }
-    }, used.map((u, i) => /*#__PURE__*/React.createElement("span", {
+    }, used.map((u, i) => /*#__PURE__*/React.createElement("button", {
       key: i,
+      onClick: () => onJumpToBundle && onJumpToBundle(u),
+      title: onJumpToBundle ? `Open "${u.name}" in Bundles` : undefined,
       style: {
         fontSize: 12.5,
         background: "var(--sageDim)",
         color: "var(--ink)",
         borderRadius: 999,
         padding: "3px 10px",
-        border: "1px solid var(--line)"
+        border: "1px solid var(--line)",
+        cursor: onJumpToBundle ? "pointer" : "default"
       }
     }, u.name, u.sku ? ` · ${u.sku}` : ""))));
   })), filtered.length > shown.length && /*#__PURE__*/React.createElement("div", {
@@ -2716,7 +2792,8 @@ function StockIssues({
   onDelete,
   onPromote,
   onSkip,
-  pushPrice
+  pushPrice,
+  onJumpToProduct
 }) {
   const [openId, setOpenId] = useState(null);
   const update = (id, patch) => setBundles(bundles.map(b => b.id === id ? {
@@ -2824,7 +2901,8 @@ function StockIssues({
       onDelete: onDelete,
       onPromote: onPromote,
       onSkip: onSkip,
-      pushPrice: pushPrice
+      pushPrice: pushPrice,
+      onJumpToProduct: onJumpToProduct
     }));
   })));
 }
