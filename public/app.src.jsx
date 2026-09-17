@@ -2757,6 +2757,7 @@ function Products({
               >
                 <input
                   value={p.name}
+                  disabled={!p.active}
                   onChange={(e) => update(p.id, { name: e.target.value })}
                   style={{
                     border: "none",
@@ -2768,6 +2769,7 @@ function Products({
                 />
                 <input
                   value={p.sku}
+                  disabled={!p.active}
                   onChange={(e) => update(p.id, { sku: e.target.value })}
                   style={{
                     border: "1px solid var(--line)",
@@ -2781,6 +2783,7 @@ function Products({
                   <input
                     type="number"
                     value={p.price}
+                    disabled={!p.active}
                     onFocus={(e) => {
                       priceFocus.current = {
                         id: p.id,
@@ -2808,7 +2811,7 @@ function Products({
                       textAlign: "right",
                     }}
                   />
-                  {p.shopifyVariantId && pushPrice && (
+                  {p.active && p.shopifyVariantId && pushPrice && (
                     <button
                       onClick={() => pushPrice("product", p)}
                       title="Push this price straight to your live Shopify store"

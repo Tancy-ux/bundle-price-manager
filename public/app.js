@@ -2478,6 +2478,7 @@ function Products({
       }
     }, /*#__PURE__*/React.createElement("input", {
       value: p.name,
+      disabled: !p.active,
       onChange: e => update(p.id, {
         name: e.target.value
       }),
@@ -2490,6 +2491,7 @@ function Products({
       }
     }), /*#__PURE__*/React.createElement("input", {
       value: p.sku,
+      disabled: !p.active,
       onChange: e => update(p.id, {
         sku: e.target.value
       }),
@@ -2509,6 +2511,7 @@ function Products({
     }, /*#__PURE__*/React.createElement("input", {
       type: "number",
       value: p.price,
+      disabled: !p.active,
       onFocus: e => {
         priceFocus.current = {
           id: p.id,
@@ -2534,7 +2537,7 @@ function Products({
         fontSize: 14,
         textAlign: "right"
       }
-    }), p.shopifyVariantId && pushPrice && /*#__PURE__*/React.createElement("button", {
+    }), p.active && p.shopifyVariantId && pushPrice && /*#__PURE__*/React.createElement("button", {
       onClick: () => pushPrice("product", p),
       title: "Push this price straight to your live Shopify store",
       style: {
