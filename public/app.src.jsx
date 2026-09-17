@@ -1455,7 +1455,7 @@ function Bundles({
     return b && isSingleItemCandidate(b.name) ? "single" : "all";
   });
   const [cat, setCat] = useState(""); // category word
-  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortBy, setSortBy] = useState(null); // null | "name" | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1491,6 +1491,11 @@ function Bundles({
     if (!sortBy) return filtered;
     const arr = [...filtered];
     arr.sort((a, b) => {
+      if (sortBy === "name") {
+        return sortDir === "asc"
+          ? a.name.localeCompare(b.name)
+          : b.name.localeCompare(a.name);
+      }
       const ca = compute(a), cb = compute(b);
       if (sortBy === "price") {
         const av = ca.giftIncluded ? a.storedPrice || 0 : ca.target;
@@ -1692,7 +1697,13 @@ function Bundles({
           }}
         >
           <span style={{ width: 8, flexShrink: 0 }} />
-          <span style={{ flex: 1 }}>Bundle</span>
+          <span
+            style={{ flex: 1, cursor: "pointer", userSelect: "none" }}
+            onClick={() => toggleSort("name")}
+            title="Sort by name"
+          >
+            Bundle{sortArrow("name")}
+          </span>
           <span
             style={{ width: 90, textAlign: "right", cursor: "pointer", userSelect: "none" }}
             onClick={() => toggleSort("stock")}
@@ -2478,7 +2489,7 @@ function Products({
     const match = products.find((p) => (p.sku && p.sku === initialQuery) || p.name === initialQuery);
     return match && isMarbleAtelier(match.name) ? "atelier" : "all";
   });
-  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortBy, setSortBy] = useState(null); // null | "name" | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -2545,6 +2556,11 @@ function Products({
     if (!sortBy) return filtered;
     const arr = [...filtered];
     arr.sort((a, b) => {
+      if (sortBy === "name") {
+        return sortDir === "asc"
+          ? a.name.localeCompare(b.name)
+          : b.name.localeCompare(a.name);
+      }
       if (sortBy === "price") {
         return sortDir === "asc" ? a.price - b.price : b.price - a.price;
       }
@@ -2717,7 +2733,13 @@ function Products({
             borderBottom: "1px solid var(--line)",
           }}
         >
-          <span>Product</span>
+          <span
+            style={{ cursor: "pointer", userSelect: "none" }}
+            onClick={() => toggleSort("name")}
+            title="Sort by name"
+          >
+            Product{sortArrow("name")}
+          </span>
           <span>SKU</span>
           <span
             style={{ textAlign: "right", cursor: "pointer", userSelect: "none" }}

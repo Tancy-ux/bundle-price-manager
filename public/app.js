@@ -1305,7 +1305,7 @@ function Bundles({
     return b && isSingleItemCandidate(b.name) ? "single" : "all";
   });
   const [cat, setCat] = useState(""); // category word
-  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortBy, setSortBy] = useState(null); // null | "name" | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = col => {
     if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
@@ -1337,6 +1337,9 @@ function Bundles({
     if (!sortBy) return filtered;
     const arr = [...filtered];
     arr.sort((a, b) => {
+      if (sortBy === "name") {
+        return sortDir === "asc" ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+      }
       const ca = compute(a),
         cb = compute(b);
       if (sortBy === "price") {
@@ -1517,9 +1520,13 @@ function Bundles({
     }
   }), /*#__PURE__*/React.createElement("span", {
     style: {
-      flex: 1
-    }
-  }, "Bundle"), /*#__PURE__*/React.createElement("span", {
+      flex: 1,
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("name"),
+    title: "Sort by name"
+  }, "Bundle", sortArrow("name")), /*#__PURE__*/React.createElement("span", {
     style: {
       width: 90,
       textAlign: "right",
@@ -2234,7 +2241,7 @@ function Products({
     const match = products.find(p => p.sku && p.sku === initialQuery || p.name === initialQuery);
     return match && isMarbleAtelier(match.name) ? "atelier" : "all";
   });
-  const [sortBy, setSortBy] = useState(null); // null | "price" | "stock"
+  const [sortBy, setSortBy] = useState(null); // null | "name" | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = col => {
     if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
@@ -2287,6 +2294,9 @@ function Products({
     if (!sortBy) return filtered;
     const arr = [...filtered];
     arr.sort((a, b) => {
+      if (sortBy === "name") {
+        return sortDir === "asc" ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+      }
       if (sortBy === "price") {
         return sortDir === "asc" ? a.price - b.price : b.price - a.price;
       }
@@ -2437,7 +2447,14 @@ function Products({
       fontWeight: 700,
       borderBottom: "1px solid var(--line)"
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Product"), /*#__PURE__*/React.createElement("span", null, "SKU"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      cursor: "pointer",
+      userSelect: "none"
+    },
+    onClick: () => toggleSort("name"),
+    title: "Sort by name"
+  }, "Product", sortArrow("name")), /*#__PURE__*/React.createElement("span", null, "SKU"), /*#__PURE__*/React.createElement("span", {
     style: {
       textAlign: "right",
       cursor: "pointer",
