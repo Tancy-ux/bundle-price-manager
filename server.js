@@ -93,7 +93,7 @@ app.put("/api/data", (req, res) => {
   res.json({ ok: true, data: saved });
 });
 
-const SYNC_THROTTLE_MS = 24 * 60 * 60 * 1000;
+const SYNC_THROTTLE_MS = 4 * 60 * 60 * 1000;
 
 app.post("/api/sync", async (req, res) => {
   try {

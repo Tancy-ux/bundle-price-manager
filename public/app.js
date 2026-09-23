@@ -255,7 +255,7 @@ function App() {
 
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
-  // Throttled server-side to once/24h; syncEligible below mirrors that for the UI.
+  // Throttled server-side to once/4h; syncEligible below mirrors that for the UI.
   async function syncNow() {
     setSyncing(true);
     try {
@@ -294,7 +294,7 @@ function App() {
       setSyncing(false);
     }
   }
-  const SYNC_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const SYNC_COOLDOWN_MS = 4 * 60 * 60 * 1000;
   const syncEligible = !lastSyncAt || Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
 
   // push one item's price straight to its linked Shopify variant. Only ever
@@ -554,14 +554,15 @@ function App() {
     },
     className: "serif"
   }, "Loading from disk…");
-  const staleList = bundles.map(b => ({
+  const staleList = bundles.filter(b => b.active !== false).map(b => ({
     b,
     c: compute(b)
   })).filter(x => x.c.stale);
-  const oosList = bundles.map(b => ({
+  const oosList = bundles.filter(b => b.active !== false).map(b => ({
     b,
     c: compute(b)
   })).filter(x => x.c.hasOOS).sort((a, b) => a.b.name.localeCompare(b.b.name));
+  const discontinuedCount = products.filter(p => !p.active).length + bundles.filter(b => b.active === false).length;
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   return /*#__PURE__*/React.createElement("div", {
@@ -639,13 +640,22 @@ function App() {
   }, "stock", " ", stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced")), /*#__PURE__*/React.createElement("button", {
     onClick: syncNow,
     disabled: syncing || !syncEligible,
-    title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 24h` : "Pull new products, new bundle shells, and refresh stock from Shopify",
+    title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h` : "Pull new products, new bundle shells, and refresh stock from Shopify",
     style: {
       ...btnSec,
       opacity: syncing || !syncEligible ? 0.55 : 1,
       cursor: syncing || !syncEligible ? "default" : "pointer"
     }
-  }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("nav", {
+  }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(GlobalSearch, {
+    products: products,
+    bundles: bundles,
+    onJumpToProduct: jumpToProduct,
+    onJumpToBundle: jumpToBundle
+  })), /*#__PURE__*/React.createElement("nav", {
     style: {
       display: "flex",
       gap: 2,
@@ -653,7 +663,7 @@ function App() {
       borderBottom: "1px solid var(--line)",
       flexWrap: "wrap"
     }
-  }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["discontinued", `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => {
       setTab(k);
@@ -779,6 +789,13 @@ function App() {
     onSkip: skipBundle,
     pushPrice: pushPriceToShopify,
     onJumpToProduct: jumpToProduct
+  }), tab === "discontinued" && /*#__PURE__*/React.createElement(Discontinued, {
+    products: products,
+    setProducts: setProducts,
+    bundles: bundles,
+    setBundles: setBundles,
+    onDeleteProduct: deleteProduct,
+    onDeleteBundle: deleteBundle
   }), tab === "trash" && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
@@ -859,6 +876,98 @@ function ConfirmModal({
       background: danger ? "var(--clay)" : "var(--ink)"
     }
   }, confirmLabel))));
+}
+
+// searches products AND bundles by name/SKU at once, so you don't have to
+// know or care which tab something lives in before finding it — picking a
+// result jumps straight to it there (same jump used elsewhere in the app)
+function GlobalSearch({
+  products,
+  bundles,
+  onJumpToProduct,
+  onJumpToBundle
+}) {
+  const [q, setQ] = useState("");
+  const results = useMemo(() => {
+    if (!q.trim()) return [];
+    const p = products.filter(x => matchText(q, x.name + " " + (x.sku || ""))).map(x => ({
+      type: "product",
+      item: x
+    }));
+    const b = bundles.filter(x => matchText(q, x.name + " " + (x.sku || ""))).map(x => ({
+      type: "bundle",
+      item: x
+    }));
+    return [...p, ...b].slice(0, 30);
+  }, [q, products, bundles]);
+  function pick(r) {
+    if (r.type === "product") onJumpToProduct(r.item);else onJumpToBundle({
+      id: r.item.id,
+      name: r.item.name
+    });
+    setQ("");
+  }
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("input", {
+    value: q,
+    onChange: e => setQ(e.target.value),
+    placeholder: "Search everything — products & bundles…",
+    style: search
+  }), q.trim() && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, results.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: note
+  }, "No matches.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
+    style: note
+  }, results.length, " match", results.length === 1 ? "" : "es", results.length === 30 ? " · showing first 30" : ""), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      overflow: "hidden",
+      maxHeight: 300,
+      overflowY: "auto"
+    }
+  }, results.map(r => /*#__PURE__*/React.createElement("button", {
+    key: r.type + r.item.id,
+    onClick: () => pick(r),
+    style: {
+      width: "100%",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "10px 14px",
+      background: "none",
+      border: "none",
+      borderBottom: "1px solid var(--line)",
+      cursor: "pointer",
+      textAlign: "left"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+      padding: "1px 6px",
+      borderRadius: 999,
+      color: r.type === "bundle" ? "var(--amber)" : "var(--sage)",
+      border: `1px solid ${r.type === "bundle" ? "var(--amber)" : "var(--sage)"}`,
+      flexShrink: 0
+    }
+  }, r.type), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      flex: 1
+    }
+  }, r.item.name), r.item.sku && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)",
+      whiteSpace: "nowrap"
+    }
+  }, r.item.sku)))))));
 }
 function Worklist({
   staleList,
@@ -1319,8 +1428,8 @@ function Bundles({
   // marble-vase/lush bundles are a separate silo — every other filter (all,
   // not built yet, built, out of stock, duplicate names) only ever looks at
   // "normal" bundles; they only appear once you explicitly pick their own pill.
-  const normalBundles = useMemo(() => bundles.filter(b => !isSingleItemCandidate(b.name)), [bundles]);
-  const singleBundles = useMemo(() => bundles.filter(b => isSingleItemCandidate(b.name)), [bundles]);
+  const normalBundles = useMemo(() => bundles.filter(b => b.active !== false && !isSingleItemCandidate(b.name)), [bundles]);
+  const singleBundles = useMemo(() => bundles.filter(b => b.active !== false && isSingleItemCandidate(b.name)), [bundles]);
   const filtered = useMemo(() => {
     const pool = show === "single" ? singleBundles : normalBundles;
     return pool.filter(b => {
@@ -2045,6 +2154,39 @@ function BundleEditor({
       } : {})
     }
   }, b.skipped ? "Un-skip" : "Skip this bundle")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 8,
+      background: b.active === false ? "var(--clayDim)" : "transparent",
+      borderRadius: 8,
+      padding: b.active === false ? "8px 12px" : "0"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--muted)",
+      lineHeight: 1.4
+    }
+  }, b.active === false ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--clay)",
+      fontWeight: 600
+    }
+  }, "Discontinued — hidden from the main list and worklist. Find it in the Discontinued tab.") : /*#__PURE__*/React.createElement("span", null, "No longer sold? Mark it discontinued instead of deleting — keeps it intact, out of your way, and restorable anytime.")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => update(b.id, {
+      active: b.active === false
+    }),
+    style: {
+      ...btnSec,
+      whiteSpace: "nowrap",
+      ...(b.active === false ? {
+        color: "var(--clay)",
+        borderColor: "var(--clay)"
+      } : {})
+    }
+  }, b.active === false ? "Restore" : "Mark discontinued")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -2928,6 +3070,119 @@ function StockIssues({
 }
 
 // shared inline styles
+// products/bundles marked no-longer-sold. Unlike Trash, these stay fully
+// intact (price, history, bundle items) — "discontinued" just hides them
+// from the active worklist/lists until restored, instead of deleting them.
+function Discontinued({
+  products,
+  setProducts,
+  bundles,
+  setBundles,
+  onDeleteProduct,
+  onDeleteBundle
+}) {
+  const discProducts = useMemo(() => products.filter(p => !p.active), [products]);
+  const discBundles = useMemo(() => bundles.filter(b => b.active === false), [bundles]);
+  const restoreProduct = p => setProducts(cur => cur.map(x => x.id === p.id ? {
+    ...x,
+    active: true
+  } : x));
+  const restoreBundle = b => setBundles(cur => cur.map(x => x.id === b.id ? {
+    ...x,
+    active: true
+  } : x));
+  if (!discProducts.length && !discBundles.length) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "60px 20px",
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 14
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "serif",
+    style: {
+      fontSize: 22,
+      margin: "0 0 6px"
+    }
+  }, "Nothing discontinued"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: "var(--muted)",
+      maxWidth: 420,
+      margin: "0 auto",
+      lineHeight: 1.5
+    }
+  }, "Mark a product \"Inactive\" or a bundle \"Discontinued\" (from its edit panel) when it stops selling instead of deleting it — it'll show up here, still intact, restorable anytime."));
+  const row = (name, sub, onRestore, onDelete) => /*#__PURE__*/React.createElement("div", {
+    key: name + sub,
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+      padding: "11px 16px",
+      borderBottom: "1px solid var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, sub)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onRestore,
+    style: btnSec
+  }, "Restore"), /*#__PURE__*/React.createElement("button", {
+    onClick: onDelete,
+    style: {
+      ...btnSec,
+      color: "var(--clay)",
+      borderColor: "var(--clayDim)"
+    }
+  }, "Delete")));
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 20
+    }
+  }, !!discProducts.length && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 8px",
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, "Products (", discProducts.length, ")"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      overflow: "hidden"
+    }
+  }, discProducts.map(p => row(p.name, `${p.sku || "no SKU"} · ${money(p.price)}`, () => restoreProduct(p), () => onDeleteProduct(p))))), !!discBundles.length && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 8px",
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, "Bundles (", discBundles.length, ")"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      overflow: "hidden"
+    }
+  }, discBundles.map(b => row(b.name, `${b.sku || "no SKU"} · ${money(b.storedPrice || 0)} · ${b.items.length} item${b.items.length === 1 ? "" : "s"}`, () => restoreBundle(b), () => onDeleteBundle(b))))));
+}
 function Trash({
   trash,
   onRestore,

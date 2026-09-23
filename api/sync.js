@@ -3,7 +3,7 @@
 // scripts/import-bundle-shells.js + scripts/fetch-stock.js worth of logic in
 // one pass — see lib/shopifySync.js for the actual diff/merge logic.
 //
-// Throttled to once per 24h (enforced here, not just in the UI) since it's
+// Throttled to once per 4h (enforced here, not just in the UI) since it's
 // reachable by anyone who can load the app.
 //
 // Env vars needed (Vercel project → Settings → Environment Variables):
@@ -33,7 +33,7 @@ function getRedis() {
 const KEY = "bundle-manager:data";
 const BACKUPS = "bundle-manager:backups";
 const MAX_BACKUPS = 20;
-const THROTTLE_MS = 24 * 60 * 60 * 1000;
+const THROTTLE_MS = 4 * 60 * 60 * 1000;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {

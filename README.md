@@ -108,11 +108,18 @@ Backups: the last 20 pre-save versions are kept in the Redis list
 ## Keeping the catalog in sync with Shopify
 
 New products get added in Shopify over time. To pull those into the live app
-**without disturbing anything else**, use the sync script. It matches on **SKU**
-and only ever *adds* products — it never edits or deletes an existing product,
-and never touches bundles, prices you've changed by hand, or history. (Bundles
-link to products by an internal id, so replacing the product list would break
-every bundle — hence add-only.)
+**without disturbing anything else**, use the sync script. It only ever *adds*
+products — it never edits or deletes an existing product, and never touches
+bundles, prices you've changed by hand, or history. (Bundles link to products by
+an internal id, so replacing the product list would break every bundle — hence
+add-only.)
+
+**Matching** (deciding whether an incoming product is already in the catalog):
+by **SKU** when both sides have one; by **normalised name** as a fallback when
+the incoming product has no SKU. A product with no SKU that isn't found by name
+is *reported but not added* unless you pass `--include-nosku`. If an incoming
+product has a new SKU but its name already exists, it's still added and flagged
+as a likely duplicate for you to merge in the app.
 
 ### With a CSV export (no API setup)
 
@@ -123,9 +130,10 @@ every bundle — hence add-only.)
    npm run sync-store -- path/to/products_export.csv
    ```
 
-   It lists: new products it would add, SKUs already in the catalog (skipped),
-   draft/archived products (skipped), price differences (reported only, never
-   changed), and catalog SKUs missing from the export.
+   It lists: new products with a SKU it would add, new products with no SKU
+   (reported only by default), likely-duplicate name clashes, products already
+   in the catalog (skipped), draft/archived (skipped), price differences
+   (reported only, never changed), and catalog products missing from the export.
 3. Happy with it? Add `--apply`:
 
    ```
@@ -136,6 +144,7 @@ every bundle — hence add-only.)
    the Redis backup list first.
 
 Flags: `--include-draft` also adds draft products (as inactive);
+`--include-nosku` also adds products that have no SKU (matched by name);
 `--base <file>` merges against a local JSON file instead of live data
 (needs `--force` to `--apply`).
 
@@ -243,7 +252,7 @@ listings) by name.
 The **"Sync with Shopify"** button in the app header runs all three of the
 above in a single pass — new products, new bundle shells, and a stock
 refresh — with one Shopify fetch and one write. Throttled to **once every
-24 hours**, enforced by the server (`/api/sync`), not just the button, so
+4 hours**, enforced by the server (`/api/sync`), not just the button, so
 it's safe even if the endpoint is hit directly.
 
 For the hosted app, it needs `SHOPIFY_STORE` and `SHOPIFY_ADMIN_TOKEN` added

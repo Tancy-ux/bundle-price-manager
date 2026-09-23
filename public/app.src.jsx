@@ -239,7 +239,7 @@ function App() {
 
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
-  // Throttled server-side to once/24h; syncEligible below mirrors that for the UI.
+  // Throttled server-side to once/4h; syncEligible below mirrors that for the UI.
   async function syncNow() {
     setSyncing(true);
     try {
@@ -278,7 +278,7 @@ function App() {
       setSyncing(false);
     }
   }
-  const SYNC_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const SYNC_COOLDOWN_MS = 4 * 60 * 60 * 1000;
   const syncEligible =
     !lastSyncAt ||
     Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
@@ -528,12 +528,17 @@ function App() {
     );
 
   const staleList = bundles
+    .filter((b) => b.active !== false)
     .map((b) => ({ b, c: compute(b) }))
     .filter((x) => x.c.stale);
   const oosList = bundles
+    .filter((b) => b.active !== false)
     .map((b) => ({ b, c: compute(b) }))
     .filter((x) => x.c.hasOOS)
     .sort((a, b) => a.b.name.localeCompare(b.b.name));
+  const discontinuedCount =
+    products.filter((p) => !p.active).length +
+    bundles.filter((b) => b.active === false).length;
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce(
     (max, p) =>
@@ -625,7 +630,7 @@ function App() {
               disabled={syncing || !syncEligible}
               title={
                 !syncEligible
-                  ? `Last synced ${timeAgo(lastSyncAt)} — available once every 24h`
+                  ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h`
                   : "Pull new products, new bundle shells, and refresh stock from Shopify"
               }
               style={{
@@ -642,6 +647,14 @@ function App() {
             </button>
           </div>
         </header>
+        <div style={{ marginTop: 12 }}>
+          <GlobalSearch
+            products={products}
+            bundles={bundles}
+            onJumpToProduct={jumpToProduct}
+            onJumpToBundle={jumpToBundle}
+          />
+        </div>
         <nav
           style={{
             display: "flex",
@@ -662,6 +675,10 @@ function App() {
             [
               "stock",
               `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`,
+            ],
+            [
+              "discontinued",
+              `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`,
             ],
             ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`],
           ].map(([k, label]) => (
@@ -830,6 +847,16 @@ function App() {
             onJumpToProduct={jumpToProduct}
           />
         )}
+        {tab === "discontinued" && (
+          <Discontinued
+            products={products}
+            setProducts={setProducts}
+            bundles={bundles}
+            setBundles={setBundles}
+            onDeleteProduct={deleteProduct}
+            onDeleteBundle={deleteBundle}
+          />
+        )}
         {tab === "trash" && (
           <Trash
             trash={trash}
@@ -915,6 +942,112 @@ function ConfirmModal({ title, detail, confirmLabel, danger, onClose }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// searches products AND bundles by name/SKU at once, so you don't have to
+// know or care which tab something lives in before finding it — picking a
+// result jumps straight to it there (same jump used elsewhere in the app)
+function GlobalSearch({ products, bundles, onJumpToProduct, onJumpToBundle }) {
+  const [q, setQ] = useState("");
+
+  const results = useMemo(() => {
+    if (!q.trim()) return [];
+    const p = products
+      .filter((x) => matchText(q, x.name + " " + (x.sku || "")))
+      .map((x) => ({ type: "product", item: x }));
+    const b = bundles
+      .filter((x) => matchText(q, x.name + " " + (x.sku || "")))
+      .map((x) => ({ type: "bundle", item: x }));
+    return [...p, ...b].slice(0, 30);
+  }, [q, products, bundles]);
+
+  function pick(r) {
+    if (r.type === "product") onJumpToProduct(r.item);
+    else onJumpToBundle({ id: r.item.id, name: r.item.name });
+    setQ("");
+  }
+
+  return (
+    <div>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search everything — products & bundles…"
+        style={search}
+      />
+      {q.trim() && (
+        <div style={{ marginTop: 8 }}>
+          {results.length === 0 ? (
+            <p style={note}>No matches.</p>
+          ) : (
+            <>
+              <p style={note}>
+                {results.length} match{results.length === 1 ? "" : "es"}
+                {results.length === 30 ? " · showing first 30" : ""}
+              </p>
+              <div
+                style={{
+                  background: "var(--card)",
+                  border: "1px solid var(--line)",
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  maxHeight: 300,
+                  overflowY: "auto",
+                }}
+              >
+                {results.map((r) => (
+                  <button
+                    key={r.type + r.item.id}
+                    onClick={() => pick(r)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "10px 14px",
+                      background: "none",
+                      border: "none",
+                      borderBottom: "1px solid var(--line)",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        color: r.type === "bundle" ? "var(--amber)" : "var(--sage)",
+                        border: `1px solid ${r.type === "bundle" ? "var(--amber)" : "var(--sage)"}`,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {r.type}
+                    </span>
+                    <span style={{ fontSize: 14, flex: 1 }}>{r.item.name}</span>
+                    {r.item.sku && (
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--muted)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {r.item.sku}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1468,11 +1601,15 @@ function Bundles({
   // not built yet, built, out of stock, duplicate names) only ever looks at
   // "normal" bundles; they only appear once you explicitly pick their own pill.
   const normalBundles = useMemo(
-    () => bundles.filter((b) => !isSingleItemCandidate(b.name)),
+    () =>
+      bundles.filter(
+        (b) => b.active !== false && !isSingleItemCandidate(b.name),
+      ),
     [bundles],
   );
   const singleBundles = useMemo(
-    () => bundles.filter((b) => isSingleItemCandidate(b.name)),
+    () =>
+      bundles.filter((b) => b.active !== false && isSingleItemCandidate(b.name)),
     [bundles],
   );
   const filtered = useMemo(() => {
@@ -2273,6 +2410,43 @@ function BundleEditor({
           }}
         >
           {b.skipped ? "Un-skip" : "Skip this bundle"}
+        </button>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+          background: b.active === false ? "var(--clayDim)" : "transparent",
+          borderRadius: 8,
+          padding: b.active === false ? "8px 12px" : "0",
+        }}
+      >
+        <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.4 }}>
+          {b.active === false ? (
+            <span style={{ color: "var(--clay)", fontWeight: 600 }}>
+              Discontinued — hidden from the main list and worklist. Find it
+              in the Discontinued tab.
+            </span>
+          ) : (
+            <span>
+              No longer sold? Mark it discontinued instead of deleting — keeps
+              it intact, out of your way, and restorable anytime.
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => update(b.id, { active: b.active === false })}
+          style={{
+            ...btnSec,
+            whiteSpace: "nowrap",
+            ...(b.active === false
+              ? { color: "var(--clay)", borderColor: "var(--clay)" }
+              : {}),
+          }}
+        >
+          {b.active === false ? "Restore" : "Mark discontinued"}
         </button>
       </div>
       <div
@@ -3299,6 +3473,151 @@ function StockIssues({
 }
 
 // shared inline styles
+// products/bundles marked no-longer-sold. Unlike Trash, these stay fully
+// intact (price, history, bundle items) — "discontinued" just hides them
+// from the active worklist/lists until restored, instead of deleting them.
+function Discontinued({
+  products,
+  setProducts,
+  bundles,
+  setBundles,
+  onDeleteProduct,
+  onDeleteBundle,
+}) {
+  const discProducts = useMemo(
+    () => products.filter((p) => !p.active),
+    [products],
+  );
+  const discBundles = useMemo(
+    () => bundles.filter((b) => b.active === false),
+    [bundles],
+  );
+  const restoreProduct = (p) =>
+    setProducts((cur) =>
+      cur.map((x) => (x.id === p.id ? { ...x, active: true } : x)),
+    );
+  const restoreBundle = (b) =>
+    setBundles((cur) =>
+      cur.map((x) => (x.id === b.id ? { ...x, active: true } : x)),
+    );
+
+  if (!discProducts.length && !discBundles.length)
+    return (
+      <div
+        style={{
+          textAlign: "center",
+          padding: "60px 20px",
+          background: "var(--card)",
+          border: "1px solid var(--line)",
+          borderRadius: 14,
+        }}
+      >
+        <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+          Nothing discontinued
+        </h2>
+        <p
+          style={{
+            color: "var(--muted)",
+            maxWidth: 420,
+            margin: "0 auto",
+            lineHeight: 1.5,
+          }}
+        >
+          Mark a product "Inactive" or a bundle "Discontinued" (from its edit
+          panel) when it stops selling instead of deleting it — it'll show up
+          here, still intact, restorable anytime.
+        </p>
+      </div>
+    );
+
+  const row = (name, sub, onRestore, onDelete) => (
+    <div
+      key={name + sub}
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 10,
+        padding: "11px 16px",
+        borderBottom: "1px solid var(--line)",
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{name}</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{sub}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onRestore} style={btnSec}>
+          Restore
+        </button>
+        <button
+          onClick={onDelete}
+          style={{
+            ...btnSec,
+            color: "var(--clay)",
+            borderColor: "var(--clayDim)",
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {!!discProducts.length && (
+        <div>
+          <p style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 600 }}>
+            Products ({discProducts.length})
+          </p>
+          <div
+            style={{
+              background: "var(--card)",
+              border: "1px solid var(--line)",
+              borderRadius: 12,
+              overflow: "hidden",
+            }}
+          >
+            {discProducts.map((p) =>
+              row(
+                p.name,
+                `${p.sku || "no SKU"} · ${money(p.price)}`,
+                () => restoreProduct(p),
+                () => onDeleteProduct(p),
+              ),
+            )}
+          </div>
+        </div>
+      )}
+      {!!discBundles.length && (
+        <div>
+          <p style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 600 }}>
+            Bundles ({discBundles.length})
+          </p>
+          <div
+            style={{
+              background: "var(--card)",
+              border: "1px solid var(--line)",
+              borderRadius: 12,
+              overflow: "hidden",
+            }}
+          >
+            {discBundles.map((b) =>
+              row(
+                b.name,
+                `${b.sku || "no SKU"} · ${money(b.storedPrice || 0)} · ${b.items.length} item${b.items.length === 1 ? "" : "s"}`,
+                () => restoreBundle(b),
+                () => onDeleteBundle(b),
+              ),
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Trash({ trash, onRestore, onDelete, onEmpty }) {
   if (!trash.length)
     return (
