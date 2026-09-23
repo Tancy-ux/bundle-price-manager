@@ -24,6 +24,10 @@ on:
         description: "Also add draft products (as inactive)"
         type: boolean
         default: false
+      include_nosku:
+        description: "Also add products with no SKU (matched by name)"
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -47,6 +51,7 @@ jobs:
           FLAGS="--shopify"
           if [ "${{ inputs.apply }}" = "true" ]; then FLAGS="$FLAGS --apply"; fi
           if [ "${{ inputs.include_draft }}" = "true" ]; then FLAGS="$FLAGS --include-draft"; fi
+          if [ "${{ inputs.include_nosku }}" = "true" ]; then FLAGS="$FLAGS --include-nosku"; fi
           echo "Running: node scripts/sync-store.js $FLAGS"
           node scripts/sync-store.js $FLAGS | tee sync-output.txt
 

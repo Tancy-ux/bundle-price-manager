@@ -1,8 +1,15 @@
 // Add products that exist in Shopify but not yet in the Bundle Price Manager.
 //
-// SAFE BY DESIGN: this only ADDS products, matched by SKU. It never edits or
-// deletes an existing product, and never touches bundles or trash. Your bundle
-// links, manual price edits, and history are all left untouched.
+// SAFE BY DESIGN: this only ADDS products. It never edits or deletes an existing
+// product, and never touches bundles or trash. Your bundle links, manual price
+// edits, and history are all left untouched.
+//
+// MATCHING (to decide "is this product already in the catalog?"):
+//   1. by SKU  - exact, case-insensitive. Used whenever both sides have a SKU.
+//   2. by name - normalised (lowercase, punctuation collapsed). Fallback used
+//      only when the incoming product has NO SKU.
+//   Bundles link to products by an internal id, so the product list can't be
+//   replaced wholesale - hence add-only.
 //
 // Usage:
 //   npm run sync-store -- products_export.csv           dry run - shows the diff
@@ -14,6 +21,9 @@
 //   --apply             actually write to Upstash (default is a dry run)
 //   --include-draft     also add products whose Shopify status is "draft"
 //                       (added as inactive). "archived" is always skipped.
+//   --include-nosku     also add products that have no SKU (matched by name).
+//                       Off by default - they're only reported, not added,
+//                       because name matching is less reliable than SKU.
 //   --base <file>       merge against a local JSON file instead of the live data.
 //                       Requires --force to --apply, since it can overwrite
 //                       edits made on the site since that file was saved.
@@ -34,6 +44,7 @@ const has = (f) => args.includes(f);
 const apply = has("--apply");
 const force = has("--force");
 const includeDraft = has("--include-draft");
+const includeNoSku = has("--include-nosku");
 const useShopify = has("--shopify");
 const baseIdx = args.indexOf("--base");
 const basePath = baseIdx >= 0 ? args[baseIdx + 1] : null;
@@ -41,6 +52,8 @@ const csvPath = args.find((a, i) => !a.startsWith("--") && i !== baseIdx + 1);
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const normSku = (s) => (s || "").trim().toLowerCase();
+// same normalisation the app uses for its search box
+const normName = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const money = (n) => "₹" + (Number(n) || 0).toLocaleString("en-IN");
 
 // ---------- read the Shopify product list ----------
@@ -66,14 +79,17 @@ function productsFromCSV(path) {
     if (iTitle >= 0 && (r[iTitle] || "").trim()) lastTitle = r[iTitle].trim();
     if (iStatus >= 0 && (r[iStatus] || "").trim()) lastStatus = r[iStatus].trim().toLowerCase();
     const sku = (r[iSku] || "").trim();
-    if (!sku) continue;
+    const priceRaw = String(r[iPrice] ?? "").replace(/[^0-9.]/g, "");
+    // Shopify image-only rows have neither a SKU nor a price - skip those.
+    // A genuine no-SKU product still has a price on its variant row.
+    if (!sku && !priceRaw) continue;
     const opts = iOpts
       .map((i) => (r[i] || "").trim())
       .filter((v) => v && v.toLowerCase() !== "default title");
     out.push({
       name: [lastTitle, ...opts].filter(Boolean).join(" "),
       sku,
-      price: parseFloat(String(r[iPrice] ?? "").replace(/[^0-9.]/g, "")) || 0,
+      price: parseFloat(priceRaw) || 0,
       status: lastStatus,
     });
   }
@@ -100,10 +116,14 @@ async function productsFromShopify() {
     const body = await res.json();
     for (const p of body.products || []) {
       for (const v of p.variants || []) {
-        if (!v.sku) continue;
         const variantName =
           v.title && v.title !== "Default Title" ? `${p.title} ${v.title}` : p.title;
-        out.push({ name: variantName, sku: v.sku, price: parseFloat(v.price) || 0, status: p.status });
+        out.push({
+          name: variantName,
+          sku: (v.sku || "").trim(),
+          price: parseFloat(v.price) || 0,
+          status: p.status,
+        });
       }
     }
     page++;
@@ -111,7 +131,7 @@ async function productsFromShopify() {
     const m = link.match(/<([^>]+)>;\s*rel="next"/);
     url = m ? m[1] : null;
   }
-  console.log(`Fetched ${out.length} variants with a SKU from Shopify (${page} page(s)).`);
+  console.log(`Fetched ${out.length} variant(s) from Shopify (${page} page(s)).`);
   return out;
 }
 
@@ -131,37 +151,61 @@ else {
   process.exit(1);
 }
 
-// dedupe incoming by SKU (first row wins)
+// dedupe incoming: by SKU when present, otherwise by normalised name
 const seen = new Set();
 incoming = incoming.filter((p) => {
-  const k = normSku(p.sku);
-  if (!k || seen.has(k)) return false;
-  seen.add(k);
+  const key = normSku(p.sku) ? "s:" + normSku(p.sku) : "n:" + normName(p.name);
+  if (key === "n:" || seen.has(key)) return false;
+  seen.add(key);
   return true;
 });
 
+// ---------- index the catalog ----------
+
+const bySku = new Map(); // normSku -> product
+const byName = new Map(); // normName -> [products]
+for (const p of base.products) {
+  const s = normSku(p.sku);
+  if (s) bySku.set(s, p);
+  const n = normName(p.name);
+  if (n) {
+    const arr = byName.get(n) || [];
+    arr.push(p);
+    byName.set(n, arr);
+  }
+}
+
 // ---------- diff ----------
 
-const existing = new Map();
-base.products.forEach((p) => {
-  const k = normSku(p.sku);
-  if (k) existing.set(k, p);
-});
-
-const toAdd = [];
+const toAdd = []; // has SKU, new
+const noSkuNew = []; // no SKU, not found by name
+const nameClashes = []; // has a new SKU, but its name already exists in the catalog
 const skippedDraft = [];
 const skippedArchived = [];
 const priceDiffs = [];
 
 for (const p of incoming) {
-  const k = normSku(p.sku);
-  const cur = existing.get(k);
-  if (cur) {
-    if (p.price && Math.abs((cur.price || 0) - p.price) > 0.009) {
-      priceDiffs.push({ name: cur.name, sku: cur.sku, app: cur.price || 0, shopify: p.price });
+  const s = normSku(p.sku);
+  const n = normName(p.name);
+
+  let match = null;
+  let matchBy = null;
+  if (s && bySku.has(s)) {
+    match = bySku.get(s);
+    matchBy = "sku";
+  } else if (!s && n && byName.has(n)) {
+    const arr = byName.get(n);
+    match = arr[0];
+    matchBy = arr.length > 1 ? "name?" : "name";
+  }
+
+  if (match) {
+    if (matchBy === "sku" && p.price && Math.abs((match.price || 0) - p.price) > 0.009) {
+      priceDiffs.push({ name: match.name, sku: match.sku, app: match.price || 0, shopify: p.price });
     }
     continue;
   }
+
   if (p.status === "archived") {
     skippedArchived.push(p);
     continue;
@@ -170,42 +214,75 @@ for (const p of incoming) {
     skippedDraft.push(p);
     continue;
   }
-  toAdd.push({
+
+  const record = {
     id: uid(),
-    sku: p.sku,
+    sku: p.sku || "",
     name: p.name || "(unnamed)",
     price: p.price || 0,
     active: p.status !== "draft",
-  });
+  };
+
+  if (!s) {
+    noSkuNew.push(record);
+  } else {
+    if (n && byName.has(n)) nameClashes.push({ record, existing: byName.get(n)[0] });
+    toAdd.push(record);
+  }
 }
 
-const incomingSkus = new Set(incoming.map((p) => normSku(p.sku)));
+// catalog products not seen in the incoming list (by SKU or, if no SKU, by name)
+const inSku = new Set(incoming.map((p) => normSku(p.sku)).filter(Boolean));
+const inName = new Set(incoming.map((p) => normName(p.name)).filter(Boolean));
 const usedInBundle = new Set();
 base.bundles.forEach((b) => (b.items || []).forEach((it) => usedInBundle.add(it.productId)));
-const notInShopify = base.products.filter(
-  (p) => normSku(p.sku) && !incomingSkus.has(normSku(p.sku))
-);
+const notInShopify = base.products.filter((p) => {
+  const s = normSku(p.sku);
+  if (s) return !inSku.has(s);
+  return !inName.has(normName(p.name));
+});
+
+// what actually gets written
+const additions = includeNoSku ? [...toAdd, ...noSkuNew] : [...toAdd];
 
 // ---------- report ----------
 
 const L = "─".repeat(60);
 console.log(L);
 console.log(`base      ${basePath || "live Upstash data"} - ${base.products.length} products, ${base.bundles.length} bundles`);
-console.log(`incoming  ${useShopify ? "Shopify API" : csvPath} - ${incoming.length} unique SKUs`);
+console.log(`incoming  ${useShopify ? "Shopify API" : csvPath} - ${incoming.length} unique product(s)`);
 console.log(L);
 
-console.log(`\n  +${toAdd.length} new product(s) to add`);
+console.log(`\n  +${toAdd.length} new product(s) with a SKU`);
 toAdd.slice(0, 60).forEach((p) =>
   console.log(`     ${p.sku.padEnd(18)} ${money(p.price).padStart(10)}  ${p.name}${p.active ? "" : "  (inactive)"}`)
 );
 if (toAdd.length > 60) console.log(`     ...and ${toAdd.length - 60} more`);
 
+if (noSkuNew.length) {
+  const tag = includeNoSku ? "will be ADDED (--include-nosku)" : "NOT added - re-run with --include-nosku to add";
+  console.log(`\n  +${noSkuNew.length} new product(s) with NO SKU  [${tag}]`);
+  noSkuNew.slice(0, 40).forEach((p) =>
+    console.log(`     ${"(no sku)".padEnd(18)} ${money(p.price).padStart(10)}  ${p.name}`)
+  );
+  if (noSkuNew.length > 40) console.log(`     ...and ${noSkuNew.length - 40} more`);
+}
+
+if (nameClashes.length) {
+  console.log(`\n  ?${nameClashes.length} product(s) will be added by SKU, but the NAME already exists in the catalog:`);
+  nameClashes.slice(0, 40).forEach(({ record, existing }) =>
+    console.log(`     ${record.sku.padEnd(18)} "${record.name}"  <-> existing ${existing.sku ? existing.sku : "(no sku)"}`)
+  );
+  console.log(`     (likely the same item you added by hand earlier - after applying, merge/delete the dup in the app)`);
+}
+
 if (skippedDraft.length)
-  console.log(`\n  -${skippedDraft.length} draft product(s) skipped  (run with --include-draft to add them as inactive)`);
+  console.log(`\n  -${skippedDraft.length} draft product(s) skipped  (--include-draft to add as inactive)`);
 if (skippedArchived.length) console.log(`  -${skippedArchived.length} archived product(s) skipped`);
 
-const already = incoming.length - toAdd.length - skippedDraft.length - skippedArchived.length;
-console.log(`\n  =${already} SKU(s) already in the catalog  (left untouched)`);
+const already =
+  incoming.length - toAdd.length - noSkuNew.length - skippedDraft.length - skippedArchived.length;
+console.log(`\n  =${already} product(s) already in the catalog  (left untouched)`);
 
 if (priceDiffs.length) {
   console.log(`\n  !${priceDiffs.length} price difference(s) between app and Shopify  (NOT changed - review by hand):`);
@@ -216,9 +293,9 @@ if (priceDiffs.length) {
 }
 
 if (notInShopify.length) {
-  console.log(`\n  ?${notInShopify.length} catalog product(s) whose SKU is NOT in this Shopify list:`);
+  console.log(`\n  ?${notInShopify.length} catalog product(s) not found in this Shopify list:`);
   notInShopify.slice(0, 40).forEach((p) =>
-    console.log(`     ${p.sku.padEnd(18)} ${p.name}${usedInBundle.has(p.id) ? "   [used in a bundle]" : ""}`)
+    console.log(`     ${(p.sku || "(no sku)").padEnd(18)} ${p.name}${usedInBundle.has(p.id) ? "   [used in a bundle]" : ""}`)
   );
   if (notInShopify.length > 40) console.log(`     ...and ${notInShopify.length - 40} more`);
   console.log(`     (left alone - deactivate by hand in the app if they're truly discontinued)`);
@@ -231,23 +308,23 @@ console.log(`\n${L}`);
 // ---------- apply ----------
 
 if (!apply) {
-  console.log("DRY RUN - nothing written. Add --apply to add the new products.");
+  console.log(`DRY RUN - nothing written. Add --apply to add the ${additions.length} product(s) above.`);
   process.exit(0);
 }
 if (basePath && !force) {
   console.error("Refusing to --apply with --base (it could overwrite site edits made since that file). Add --force if you're sure.");
   process.exit(1);
 }
-if (!toAdd.length) {
+if (!additions.length) {
   console.log("Nothing to add. Done.");
   process.exit(0);
 }
 
 const merged = {
-  products: [...base.products, ...toAdd],
+  products: [...base.products, ...additions],
   bundles: base.bundles,
   trash: base.trash || [],
 };
 const { stamp } = await push(merged);
-console.log(`APPLIED - added ${toAdd.length} product(s).`);
+console.log(`APPLIED - added ${additions.length} product(s) (${toAdd.length} by SKU, ${includeNoSku ? noSkuNew.length : 0} without SKU).`);
 console.log(`Previous state backed up to data/backups/before-sync-${stamp}.json and the Redis backup list.`);
