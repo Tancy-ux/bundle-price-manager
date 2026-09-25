@@ -11,11 +11,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { fetchShopifyCatalog, computeSync, pushVariantPrice, pushHistory } from "./lib/shopifySync.js";
 import { mergeUpserts, mergeTrash, mergeSet } from "./lib/mergeData.js";
+import { EMPTY_REORDER, zohoConfig, fetchZohoReorder, mergeReorder, patchReorderRow } from "./lib/zohoReorder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "data.json");
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
+const REORDER_FILE = path.join(DATA_DIR, "reorder.json");
 
 // optional, dependency-free .env loader — only fills in vars that aren't
 // already set, and does nothing if the file doesn't exist (basic local use
@@ -164,6 +166,42 @@ app.post("/api/push-price", async (req, res) => {
     console.error("push-price error:", e);
     res.status(500).json({ error: "push-price error", detail: String(e?.message || e) });
   }
+});
+
+// Zoho reorder list — own file, separate from the Shopify catalog. Same
+// behaviour as api/reorder.js (hosted); see lib/zohoReorder.js.
+function readReorder() {
+  ensureDirs();
+  if (!fs.existsSync(REORDER_FILE)) return EMPTY_REORDER;
+  return JSON.parse(fs.readFileSync(REORDER_FILE, "utf-8"));
+}
+function writeReorder(doc) {
+  fs.writeFileSync(REORDER_FILE, JSON.stringify(doc, null, 2));
+  return doc;
+}
+
+app.get("/api/reorder", (req, res) => {
+  res.json(readReorder());
+});
+
+app.post("/api/reorder", async (req, res) => {
+  try {
+    const fresh = await fetchZohoReorder(zohoConfig());
+    const { doc, summary } = mergeReorder(readReorder(), fresh);
+    res.json({ ok: true, summary, data: writeReorder(doc) });
+  } catch (e) {
+    console.error("reorder sync error:", e);
+    res.status(500).json({ error: "reorder error", detail: String(e?.message || e) });
+  }
+});
+
+app.patch("/api/reorder", (req, res) => {
+  const { id, expectedDate, notes } = req.body || {};
+  if (!id) return res.status(400).json({ error: "id is required" });
+  const doc = patchReorderRow(readReorder(), id, { expectedDate, notes });
+  if (!doc) return res.status(404).json({ error: "row not found" });
+  writeReorder(doc);
+  res.json({ ok: true, row: doc.items[id] });
 });
 
 const PORT = process.env.PORT || 4321;

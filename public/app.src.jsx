@@ -121,6 +121,8 @@ function App() {
   const [ready, setReady] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  // Zoho reorder list — its own document, separate from the Shopify catalog
+  const [reorder, setReorder] = useState({ items: {}, lastSyncAt: null });
   const firstLoad = useRef(true);
   // last confirmed-saved state, used to compute what actually changed —
   // see diffById/apiPutDiff above and lib/mergeData.js for why
@@ -157,6 +159,11 @@ function App() {
       setLastSyncAt(d.lastSyncAt || null);
       setReady(true);
     })();
+    // separate request so a Zoho/Redis hiccup here never blocks the main app
+    fetch("/api/reorder")
+      .then((r) => r.json())
+      .then((d) => d && d.items && setReorder(d))
+      .catch(() => {});
   }, []);
 
   // autosave on any change (skip the initial load) — diffs against the last
@@ -539,6 +546,7 @@ function App() {
   const discontinuedCount =
     products.filter((p) => !p.active).length +
     bundles.filter((b) => b.active === false).length;
+  const reorderCount = Object.values(reorder.items || {}).filter((r) => r.below).length;
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce(
     (max, p) =>
@@ -679,6 +687,10 @@ function App() {
             [
               "discontinued",
               `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`,
+            ],
+            [
+              "reorder",
+              `Reorder${reorderCount ? ` (${reorderCount})` : ""}`,
             ],
             ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`],
           ].map(([k, label]) => (
@@ -855,6 +867,14 @@ function App() {
             setBundles={setBundles}
             onDeleteProduct={deleteProduct}
             onDeleteBundle={deleteBundle}
+          />
+        )}
+        {tab === "reorder" && (
+          <Reorder
+            doc={reorder}
+            setDoc={setReorder}
+            stickyTop={headerH}
+            flash={flash}
           />
         )}
         {tab === "trash" && (
@@ -3618,6 +3638,310 @@ function Discontinued({
   );
 }
 
+// Zoho Inventory items at/below their reorder level — nothing to do with the
+// Shopify catalog. Numbers come from Zoho (Refresh button, or the weekly
+// workflow); "Expected by" and Notes are typed here and never overwritten by
+// a refresh. Rows are never deleted: once an item is back above its reorder
+// level it moves to "Restocked", notes intact. See lib/zohoReorder.js.
+function Reorder({ doc, setDoc, stickyTop, flash }) {
+  const [q, setQ] = useState("");
+  const [vendor, setVendor] = useState("all");
+  const [view, setView] = useState("below"); // below | restocked | all
+  const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | expected
+  const [sortDir, setSortDir] = useState("asc");
+  const [refreshing, setRefreshing] = useState(false);
+  const toggleSort = (col) => {
+    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(col); setSortDir("asc"); }
+  };
+  const sortArrow = (col) => (sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+
+  const rows = useMemo(() => Object.values(doc.items || {}), [doc]);
+  const inView = (r) =>
+    view === "all" ? true : view === "below" ? r.below : !r.below;
+  const vendors = useMemo(() => {
+    const m = {};
+    rows.filter(inView).forEach((r) => {
+      const v = r.vendor || "No vendor";
+      m[v] = (m[v] || 0) + 1;
+    });
+    return Object.entries(m).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows, view]);
+  const counts = useMemo(
+    () => ({
+      below: rows.filter((r) => r.below).length,
+      restocked: rows.filter((r) => !r.below).length,
+      all: rows.length,
+    }),
+    [rows],
+  );
+  const shown = useMemo(() => {
+    const list = rows.filter(
+      (r) =>
+        inView(r) &&
+        (vendor === "all" || (r.vendor || "No vendor") === vendor) &&
+        matchText(q, `${r.name} ${r.sku} ${r.notes || ""}`),
+    );
+    const dir = sortDir === "asc" ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    list.sort((a, b) => {
+      if (sortBy === "name") return dir * byName(a, b);
+      if (sortBy === "stock") return dir * (a.stockOnHand - b.stockOnHand) || byName(a, b);
+      if (sortBy === "expected") {
+        // rows with no date always sink to the bottom
+        if (!a.expectedDate !== !b.expectedDate) return a.expectedDate ? -1 : 1;
+        return dir * (a.expectedDate || "").localeCompare(b.expectedDate || "") || byName(a, b);
+      }
+      return dir * (a.vendor || "~").localeCompare(b.vendor || "~") || byName(a, b);
+    });
+    return list;
+  }, [rows, q, vendor, view, sortBy, sortDir]);
+
+  // vendor picked no longer has rows in this view — fall back to all
+  useEffect(() => {
+    if (vendor !== "all" && !vendors.some(([v]) => v === vendor)) setVendor("all");
+  }, [vendors]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const r = await fetch("/api/reorder", { method: "POST" });
+      const j = await r.json();
+      if (r.status === 429) {
+        flash(`Refreshed ${timeAgo(j.lastSyncAt)} — try again in ${Math.ceil(j.retryAfterMs / 60000)} min`);
+      } else if (!j.ok) {
+        flash(`Zoho refresh failed: ${j.detail || j.error}`);
+      } else {
+        setDoc(j.data);
+        const s = j.summary;
+        flash(`Refreshed from Zoho · ${s.below} below reorder${s.added ? ` · ${s.added} new` : ""}`);
+      }
+    } catch {
+      flash("Zoho refresh failed — check your connection");
+    }
+    setRefreshing(false);
+  };
+
+  const saveRow = async (id, patch) => {
+    // optimistic, so typing/picking feels instant
+    setDoc((d) => ({ ...d, items: { ...d.items, [id]: { ...d.items[id], ...patch } } }));
+    try {
+      const r = await fetch("/api/reorder", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...patch }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      setDoc((d) => ({ ...d, items: { ...d.items, [id]: j.row } }));
+    } catch {
+      flash("Couldn't save — check your connection and try again");
+    }
+  };
+
+  const header = (
+    <div
+      style={{
+        position: "sticky",
+        top: stickyTop || 0,
+        zIndex: 10,
+        background: "var(--paper)",
+        paddingTop: 2,
+        paddingBottom: 10,
+      }}
+    >
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search name, SKU or notes…"
+          style={{ ...search, minWidth: 220 }}
+        />
+        <select value={vendor} onChange={(e) => setVendor(e.target.value)} style={{ ...sel, padding: "9px 10px", fontSize: 14 }}>
+          <option value="all">All vendors</option>
+          {vendors.map(([v, n]) => (
+            <option key={v} value={v}>
+              {v} ({n})
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={refresh}
+          disabled={refreshing}
+          title="Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept."
+          style={{ ...btnSec, opacity: refreshing ? 0.55 : 1 }}
+        >
+          {refreshing
+            ? "Refreshing…"
+            : doc.lastSyncAt
+              ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}`
+              : "Refresh from Zoho"}
+        </button>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+        {[
+          ["below", `Below reorder level (${counts.below})`],
+          ["restocked", `Restocked (${counts.restocked})`],
+          ["all", `All (${counts.all})`],
+        ].map(([k, label]) => (
+          <button key={k} onClick={() => setView(k)} style={{ ...catPill(view === k), textTransform: "none" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (!doc.lastSyncAt)
+    return (
+      <div>
+        {header}
+        <div
+          style={{
+            textAlign: "center",
+            padding: "60px 20px",
+            background: "var(--card)",
+            border: "1px solid var(--line)",
+            borderRadius: 14,
+          }}
+        >
+          <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+            Not pulled from Zoho yet
+          </h2>
+          <p style={{ color: "var(--muted)", maxWidth: 440, margin: "0 auto", lineHeight: 1.5 }}>
+            Click <b>Refresh from Zoho</b> to load every Zoho Inventory item
+            that's below its reorder level, with stock on hand and what's still
+            to be received on open purchase orders.
+          </p>
+        </div>
+      </div>
+    );
+
+  const th = (label, col, align) => (
+    <div
+      onClick={col ? () => toggleSort(col) : undefined}
+      style={{ textAlign: align || "left", cursor: col ? "pointer" : "default", userSelect: "none" }}
+    >
+      {label}
+      {col && sortArrow(col)}
+    </div>
+  );
+
+  return (
+    <div>
+      {header}
+      <div
+        style={{
+          background: "var(--card)",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          overflowX: "auto",
+        }}
+      >
+        <div style={{ minWidth: 1020 }}>
+          <div
+            style={{
+              ...reorderGrid,
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              color: "var(--muted)",
+            }}
+          >
+            {th("Name", "name")}
+            {th("Vendor", "vendor")}
+            {th("Reorder level", null, "right")}
+            {th("Stock on hand", "stock", "right")}
+            {th("To be received", null, "right")}
+            {th("Expected by", "expected")}
+            {th("Notes")}
+          </div>
+          {!shown.length && (
+            <div style={{ padding: "30px 16px", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
+              {view === "below" && !q && vendor === "all"
+                ? "Nothing below its reorder level right now."
+                : "No items match."}
+            </div>
+          )}
+          {shown.map((r) => (
+            <ReorderRow key={r.id} r={r} onSave={saveRow} />
+          ))}
+        </div>
+      </div>
+      <p style={{ ...note, marginTop: 10 }}>
+        {shown.length} item{shown.length === 1 ? "" : "s"} · numbers from Zoho
+        Inventory (also refreshed automatically every Monday). "To be received"
+        counts open purchase orders only.
+      </p>
+    </div>
+  );
+}
+
+function ReorderRow({ r, onSave }) {
+  // notes save on blur (or Enter), not per keystroke
+  const [draft, setDraft] = useState(r.notes || "");
+  useEffect(() => setDraft(r.notes || ""), [r.notes]);
+  const commitNotes = () => {
+    if (draft !== (r.notes || "")) onSave(r.id, { notes: draft });
+  };
+  const unit = r.unit ? ` ${r.unit}` : "";
+  return (
+    <div
+      style={{
+        ...reorderGrid,
+        padding: "10px 16px",
+        borderBottom: "1px solid var(--line)",
+        alignItems: "center",
+        fontSize: 14,
+        opacity: r.missing ? 0.6 : 1,
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600 }}>{r.name}</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+          {r.sku || "no SKU"}
+          {!!(r.openPOs || []).length &&
+            ` · ${r.openPOs.map((p) => p.number).join(", ")}`}
+          {r.missing && " · no longer in Zoho's reorder list"}
+        </div>
+      </div>
+      <div style={{ fontSize: 13, color: r.vendor ? "var(--ink)" : "var(--muted)" }}>
+        {r.vendor || "No vendor"}
+      </div>
+      <div style={numCell}>{r.reorderLevel}{unit}</div>
+      <div
+        style={{
+          ...numCell,
+          fontWeight: 600,
+          color: r.stockOnHand <= 0 ? "var(--clay)" : r.below ? "var(--amber)" : "var(--sage)",
+        }}
+      >
+        {r.stockOnHand}{unit}
+      </div>
+      <div style={{ ...numCell, color: r.toReceive ? "var(--ink)" : "var(--muted)" }}>
+        {r.toReceive || 0}{unit}
+      </div>
+      <input
+        type="date"
+        value={r.expectedDate || ""}
+        onChange={(e) => onSave(r.id, { expectedDate: e.target.value })}
+        style={{ ...inp, fontSize: 13, padding: "6px 8px" }}
+      />
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commitNotes}
+        onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+        placeholder="Add a note…"
+        style={{ ...inp, fontSize: 13, padding: "6px 8px", width: "100%" }}
+      />
+    </div>
+  );
+}
+
 function Trash({ trash, onRestore, onDelete, onEmpty }) {
   if (!trash.length)
     return (
@@ -3813,6 +4137,11 @@ const wlGrid = {
   gap: 10,
 };
 const numCell = { textAlign: "right", fontSize: 14 };
+const reorderGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(220px,1.6fr) 150px 90px 100px 105px 140px minmax(200px,1.4fr)",
+  gap: 12,
+};
 const prodGrid = {
   display: "grid",
   gridTemplateColumns: "1fr 120px 166px 66px 80px 84px 30px",

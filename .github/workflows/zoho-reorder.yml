@@ -1,0 +1,53 @@
+# Weekly: refresh the Zoho reorder list (the app's "Reorder" tab).
+#
+# Safe to run unattended: it only refreshes Zoho's numbers (stock, reorder
+# level, quantity to be received). It never deletes rows and never touches the
+# hand-entered "expected by" dates or notes. The Refresh button in the app does
+# the same thing on demand.
+#
+# Requires these repository secrets (Settings > Secrets and variables > Actions):
+#   KV_REST_API_URL        \ same values as the other workflows /
+#   KV_REST_API_TOKEN      / (Upstash REST URL + token)
+#   ZOHO_CLIENT_ID         \
+#   ZOHO_CLIENT_SECRET      | Zoho self client (api-console.zoho.in),
+#   ZOHO_REFRESH_TOKEN      | read-only scopes
+#   ZOHO_ORG_ID            /
+
+name: Refresh Zoho reorder list
+
+on:
+  schedule:
+    - cron: "30 2 * * 1" # Mondays 02:30 UTC (08:00 IST)
+  workflow_dispatch: {}
+
+jobs:
+  zoho-reorder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci --omit=dev || npm install --omit=dev
+
+      - name: Refresh from Zoho
+        env:
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          ZOHO_CLIENT_ID: ${{ secrets.ZOHO_CLIENT_ID }}
+          ZOHO_CLIENT_SECRET: ${{ secrets.ZOHO_CLIENT_SECRET }}
+          ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
+          ZOHO_ORG_ID: ${{ secrets.ZOHO_ORG_ID }}
+        run: node scripts/zoho-reorder.js --apply | tee reorder-output.txt
+
+      - name: Publish report to job summary
+        if: always()
+        run: |
+          {
+            echo '### Zoho reorder refresh'
+            echo '```'
+            cat reorder-output.txt 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

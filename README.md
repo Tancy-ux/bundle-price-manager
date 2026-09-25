@@ -262,6 +262,32 @@ configured" message rather than doing anything unexpected. Locally, it works
 through `npm start` as long as `.env` has those two values (server.js loads
 `.env` itself for this route; no other local behavior needs it).
 
+## Reorder tab (Zoho Inventory)
+
+Separate from everything Shopify. Lists every active, stock-tracked **Zoho
+Inventory** item whose stock on hand is below its reorder level — name, SKU,
+vendor, reorder level, stock on hand, quantity to be received — plus an
+**Expected by** date and **Notes** you type in. Filter by vendor to get the
+same list as Zoho's *Vendor → Order Now* screen.
+
+- **Quantity to be received** is worked out from open purchase orders
+  (ordered − cancelled − the larger of received/billed; closed POs ignored),
+  the same numbers Zoho's Order Now screen shows.
+- **Refresh from Zoho** button (throttled to once per 10 min hosted), plus
+  `.github/workflows/zoho-reorder.yml` every Monday. `npm run zoho-reorder`
+  does a dry run locally (`-- --apply` to write).
+- Refreshing only updates Zoho's numbers. It **never deletes a row** and never
+  touches your dates/notes — items back above their reorder level move to the
+  **Restocked** filter, notes intact.
+- Stored under its own Redis key `bundle-manager:reorder` (locally
+  `data/reorder.json`), never mixed into the catalog document.
+
+Needs, in `.env`, the Vercel project's Environment Variables, and the GitHub
+repository secrets: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`,
+`ZOHO_REFRESH_TOKEN`, `ZOHO_ORG_ID` (a Zoho **Self Client** at
+api-console.zoho.in with read-only scopes
+`ZohoInventory.items.READ,ZohoInventory.purchaseorders.READ,ZohoInventory.contacts.READ`).
+
 ## Later: connecting to Shopify
 
 This version is deliberately standalone. If you later want it to pull and push
