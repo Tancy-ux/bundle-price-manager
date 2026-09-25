@@ -63,10 +63,13 @@ function diffById(baseline, current) {
   const upserts = [];
   curMap.forEach((item, id) => {
     const prev = baseMap.get(id);
-    if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) upserts.push(item);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(item))
+      upserts.push(item);
   });
   const deletes = [];
-  baseMap.forEach((_, id) => { if (!curMap.has(id)) deletes.push(id); });
+  baseMap.forEach((_, id) => {
+    if (!curMap.has(id)) deletes.push(id);
+  });
   return { upserts, deletes };
 }
 // trash entries have no id of their own — keyed by the nested item's id
@@ -76,14 +79,18 @@ function diffTrash(baseline, current) {
   const upserts = [];
   curMap.forEach((item, id) => {
     const prev = baseMap.get(id);
-    if (!prev || JSON.stringify(prev) !== JSON.stringify(item)) upserts.push(item);
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(item))
+      upserts.push(item);
   });
   const deletes = [];
-  baseMap.forEach((_, id) => { if (!curMap.has(id)) deletes.push(id); });
+  baseMap.forEach((_, id) => {
+    if (!curMap.has(id)) deletes.push(id);
+  });
   return { upserts, deletes };
 }
 function diffSet(baseline, current) {
-  const baseSet = new Set(baseline || []), curSet = new Set(current || []);
+  const baseSet = new Set(baseline || []),
+    curSet = new Set(current || []);
   return {
     added: [...curSet].filter((x) => !baseSet.has(x)),
     removed: [...baseSet].filter((x) => !curSet.has(x)),
@@ -107,7 +114,7 @@ function App() {
   // a future Shopify sync won't re-add them. Restoring from Trash clears the entry.
   const [excludedSkus, setExcludedSkus] = useState([]);
   const [excludedBundleNames, setExcludedBundleNames] = useState([]);
-  const [tab, setTab] = useState("worklist");
+  const [tab, setTab] = useState("reorder");
   // set when jumping from a bundle's component to Products, so it opens
   // pre-searched to that exact item instead of the full list
   const [productJumpQuery, setProductJumpQuery] = useState("");
@@ -126,7 +133,13 @@ function App() {
   const firstLoad = useRef(true);
   // last confirmed-saved state, used to compute what actually changed —
   // see diffById/apiPutDiff above and lib/mergeData.js for why
-  const baselineRef = useRef({ products: [], bundles: [], trash: [], excludedSkus: [], excludedBundleNames: [] });
+  const baselineRef = useRef({
+    products: [],
+    bundles: [],
+    trash: [],
+    excludedSkus: [],
+    excludedBundleNames: [],
+  });
   // measure the sticky header+nav so each tab's own search/filter row can
   // stick right below it too, instead of scrolling away with the list
   const headerRef = useRef(null);
@@ -181,17 +194,31 @@ function App() {
     const bundlesDiff = diffById(baseline.bundles, bundles);
     const trashDiff = diffTrash(baseline.trash, trash);
     const excludedSkusDiff = diffSet(baseline.excludedSkus, excludedSkus);
-    const excludedBundleNamesDiff = diffSet(baseline.excludedBundleNames, excludedBundleNames);
+    const excludedBundleNamesDiff = diffSet(
+      baseline.excludedBundleNames,
+      excludedBundleNames,
+    );
     const nothingChanged =
-      !productsDiff.upserts.length && !productsDiff.deletes.length &&
-      !bundlesDiff.upserts.length && !bundlesDiff.deletes.length &&
-      !trashDiff.upserts.length && !trashDiff.deletes.length &&
-      !excludedSkusDiff.added.length && !excludedSkusDiff.removed.length &&
-      !excludedBundleNamesDiff.added.length && !excludedBundleNamesDiff.removed.length;
+      !productsDiff.upserts.length &&
+      !productsDiff.deletes.length &&
+      !bundlesDiff.upserts.length &&
+      !bundlesDiff.deletes.length &&
+      !trashDiff.upserts.length &&
+      !trashDiff.deletes.length &&
+      !excludedSkusDiff.added.length &&
+      !excludedSkusDiff.removed.length &&
+      !excludedBundleNamesDiff.added.length &&
+      !excludedBundleNamesDiff.removed.length;
     if (nothingChanged) return;
     let cancel = false;
     setSaving(true);
-    apiPutDiff({ productsDiff, bundlesDiff, trashDiff, excludedSkusDiff, excludedBundleNamesDiff })
+    apiPutDiff({
+      productsDiff,
+      bundlesDiff,
+      trashDiff,
+      excludedSkusDiff,
+      excludedBundleNamesDiff,
+    })
       .then((res) => {
         if (cancel) return;
         setSaving(false);
@@ -310,13 +337,26 @@ function App() {
         body: JSON.stringify({ kind, id: item.id, price }),
       });
       const j = await r.json();
-      if (!r.ok) { flash(j.error || "Push failed"); return; }
+      if (!r.ok) {
+        flash(j.error || "Push failed");
+        return;
+      }
       if (kind === "product") {
         setProducts((cur) => cur.map((p) => (p.id === item.id ? j.item : p)));
-        baselineRef.current = { ...baselineRef.current, products: baselineRef.current.products.map((p) => (p.id === item.id ? j.item : p)) };
+        baselineRef.current = {
+          ...baselineRef.current,
+          products: baselineRef.current.products.map((p) =>
+            p.id === item.id ? j.item : p,
+          ),
+        };
       } else {
         setBundles((cur) => cur.map((b) => (b.id === item.id ? j.item : b)));
-        baselineRef.current = { ...baselineRef.current, bundles: baselineRef.current.bundles.map((b) => (b.id === item.id ? j.item : b)) };
+        baselineRef.current = {
+          ...baselineRef.current,
+          bundles: baselineRef.current.bundles.map((b) =>
+            b.id === item.id ? j.item : b,
+          ),
+        };
       }
       flash(`Pushed ${money(price)} to Shopify for "${item.name}"`);
     } catch (e) {
@@ -546,7 +586,9 @@ function App() {
   const discontinuedCount =
     products.filter((p) => !p.active).length +
     bundles.filter((b) => b.active === false).length;
-  const reorderCount = Object.values(reorder.items || {}).filter((r) => r.below).length;
+  const reorderCount = Object.values(reorder.items || {}).filter(
+    (r) => r.below,
+  ).length;
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce(
     (max, p) =>
@@ -557,7 +599,7 @@ function App() {
   );
 
   return (
-    <div style={{ maxWidth: 980, margin: "0 auto", padding: "0 20px 60px" }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 60px" }}>
       <div
         ref={headerRef}
         style={{
@@ -655,14 +697,8 @@ function App() {
             </button>
           </div>
         </header>
-        <div style={{ marginTop: 12 }}>
-          <GlobalSearch
-            products={products}
-            bundles={bundles}
-            onJumpToProduct={jumpToProduct}
-            onJumpToBundle={jumpToBundle}
-          />
-        </div>
+        {/* GlobalSearch ("Search everything") is hidden for now — the component
+            is kept below; render it here again to bring it back */}
         <nav
           style={{
             display: "flex",
@@ -674,24 +710,24 @@ function App() {
         >
           {[
             [
-              "worklist",
-              `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`,
+              "reorder",
+              `Zoho Inventory${reorderCount ? ` (${reorderCount})` : ""}`,
             ],
             ["bundles", "Bundles"],
             ["products", "Products"],
-            ["whereused", "In bundles"],
             [
-              "stock",
-              `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`,
+              "worklist",
+              `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`,
             ],
             [
               "discontinued",
               `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`,
             ],
             [
-              "reorder",
-              `Reorder${reorderCount ? ` (${reorderCount})` : ""}`,
+              "stock",
+              `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`,
             ],
+            ["whereused", "In bundles"],
             ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`],
           ].map(([k, label]) => (
             <button
@@ -699,7 +735,8 @@ function App() {
               onClick={() => {
                 setTab(k);
                 if (k === "products") setProductJumpQuery("");
-                if (k === "worklist" || k === "bundles") setBundleJumpTarget(null);
+                if (k === "worklist" || k === "bundles")
+                  setBundleJumpTarget(null);
               }}
               style={{
                 background: "none",
@@ -1042,7 +1079,8 @@ function GlobalSearch({ products, bundles, onJumpToProduct, onJumpToBundle }) {
                         letterSpacing: 0.4,
                         padding: "1px 6px",
                         borderRadius: 999,
-                        color: r.type === "bundle" ? "var(--amber)" : "var(--sage)",
+                        color:
+                          r.type === "bundle" ? "var(--amber)" : "var(--sage)",
                         border: `1px solid ${r.type === "bundle" ? "var(--amber)" : "var(--sage)"}`,
                         flexShrink: 0,
                       }}
@@ -1602,8 +1640,9 @@ function Bundles({
   // all | empty | filled | oos | dup | single — jumping in needs to land on
   // "single" instead of "all" when the target bundle lives in that silo,
   // or it'd show no matches
+  // opening the tab normally starts on out-of-stock; a jump stays on all/single
   const [show, setShow] = useState(() => {
-    if (!initialOpenBundle) return "all";
+    if (!initialOpenBundle) return "oos";
     const b = bundles.find((x) => x.id === initialOpenBundle.id);
     return b && isSingleItemCandidate(b.name) ? "single" : "all";
   });
@@ -1612,9 +1651,13 @@ function Bundles({
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortBy(col); setSortDir("asc"); }
+    else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
   };
-  const sortArrow = (col) => (sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+  const sortArrow = (col) =>
+    sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "";
   const [visible, setVisible] = useState(60); // how many rows to show (Load more)
   const active = useMemo(() => products.filter((p) => p.active), [products]);
   // marble-vase/lush bundles are a separate silo — every other filter (all,
@@ -1629,7 +1672,9 @@ function Bundles({
   );
   const singleBundles = useMemo(
     () =>
-      bundles.filter((b) => b.active !== false && isSingleItemCandidate(b.name)),
+      bundles.filter(
+        (b) => b.active !== false && isSingleItemCandidate(b.name),
+      ),
     [bundles],
   );
   const filtered = useMemo(() => {
@@ -1653,14 +1698,16 @@ function Bundles({
           ? a.name.localeCompare(b.name)
           : b.name.localeCompare(a.name);
       }
-      const ca = compute(a), cb = compute(b);
+      const ca = compute(a),
+        cb = compute(b);
       if (sortBy === "price") {
         const av = ca.giftIncluded ? a.storedPrice || 0 : ca.target;
         const bv = cb.giftIncluded ? b.storedPrice || 0 : cb.target;
         return sortDir === "asc" ? av - bv : bv - av;
       }
       // stock: bundles with no trackable component sink to the bottom either way
-      const av = ca.stock, bv = cb.stock;
+      const av = ca.stock,
+        bv = cb.stock;
       if (av === null && bv === null) return 0;
       if (av === null) return 1;
       if (bv === null) return -1;
@@ -1677,6 +1724,10 @@ function Bundles({
     () => normalBundles.filter((b) => b.items.length === 0).length,
     [normalBundles],
   );
+  // "Not built yet" / "Built" only mean something when both are non-zero —
+  // otherwise one is empty and the other just repeats "All"
+  const builtSplitUseless =
+    emptyCount === 0 || emptyCount === normalBundles.length;
   const oosCount = useMemo(
     () => normalBundles.filter((b) => compute(b).hasOOS).length,
     [normalBundles, products],
@@ -1714,6 +1765,7 @@ function Bundles({
     setBundles([nb, ...bundles]);
     setOpenId(nb.id);
     setQ("");
+    setShow("all"); // the new, empty bundle wouldn't show under "oos"
   };
 
   return (
@@ -1744,8 +1796,8 @@ function Bundles({
         >
           {[
             ["all", `All (${normalBundles.length})`, false],
-            ["empty", `Not built yet (${emptyCount})`, false],
-            ["filled", `Built (${normalBundles.length - emptyCount})`, false],
+            ["empty", `Not built yet (${emptyCount})`, builtSplitUseless],
+            ["filled", `Built (${normalBundles.length - emptyCount})`, builtSplitUseless],
             ["oos", `Out of stock (${oosCount})`, oosCount === 0],
             ["dup", `Duplicate names (${dupCount})`, dupCount === 0],
             [
@@ -1862,14 +1914,24 @@ function Bundles({
             Bundle{sortArrow("name")}
           </span>
           <span
-            style={{ width: 90, textAlign: "right", cursor: "pointer", userSelect: "none" }}
+            style={{
+              width: 90,
+              textAlign: "right",
+              cursor: "pointer",
+              userSelect: "none",
+            }}
             onClick={() => toggleSort("stock")}
             title="Sort by sellable stock"
           >
             Stock{sortArrow("stock")}
           </span>
           <span
-            style={{ width: 90, textAlign: "right", cursor: "pointer", userSelect: "none" }}
+            style={{
+              width: 90,
+              textAlign: "right",
+              cursor: "pointer",
+              userSelect: "none",
+            }}
             onClick={() => toggleSort("price")}
             title="Sort by price"
           >
@@ -1894,151 +1956,168 @@ function Bundles({
               }}
             >
               <div style={{ display: "flex", alignItems: "center" }}>
-              <button
-                onClick={() => setOpenId(open ? null : b.id)}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "11px 14px",
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-              >
-                <span
+                <button
+                  onClick={() => setOpenId(open ? null : b.id)}
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    background: c.empty
-                      ? "var(--line)"
-                      : c.stale
-                        ? "var(--clay)"
-                        : "var(--sage)",
-                    flexShrink: 0,
+                    flex: 1,
+                    minWidth: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "11px 14px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
                   }}
-                />
-                <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600 }}>
-                  {b.name}
-                  {c.dupName && (
-                    <span
-                      title="Another bundle has this exact same name — ambiguous for matching/syncing. Rename one of them."
-                      style={{
-                        marginLeft: 7,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--amber)",
-                        border: "1px solid var(--amber)",
-                        borderRadius: 999,
-                        padding: "1px 7px",
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      dup name
-                    </span>
-                  )}
-                  {c.hasOOS && (
-                    <span
-                      title={`Out of stock: ${c.oosItems.map((x) => x.product.name).join(", ")}`}
-                      style={{
-                        marginLeft: 7,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--clay)",
-                        border: "1px solid var(--clay)",
-                        borderRadius: 999,
-                        padding: "1px 7px",
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      oos
-                    </span>
-                  )}
-                  {b.giftIncluded && (
-                    <span
-                      title="Gift / packaging price included"
-                      style={{
-                        marginLeft: 7,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--amber)",
-                        border: "1px solid var(--amber)",
-                        borderRadius: 999,
-                        padding: "1px 7px",
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      gift
-                    </span>
-                  )}
-                  {b.skipped && (
-                    <span
-                      title="Skipped — kept out of the worklist"
-                      style={{
-                        marginLeft: 7,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--sage)",
-                        border: "1px solid var(--sage)",
-                        borderRadius: 999,
-                        padding: "1px 7px",
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      skipped
-                    </span>
-                  )}
-                  {b.note && (
-                    <span
-                      title={b.note}
-                      style={{
-                        marginLeft: 6,
-                        fontSize: 12,
-                        color: "var(--muted)",
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      ✎
-                    </span>
-                  )}
-                </span>
-                <span
-                  style={{
-                    width: 90,
-                    flexShrink: 0,
-                    textAlign: "right",
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    color: c.stock !== null && c.stock <= 0 ? "var(--clay)" : "var(--muted)",
-                  }}
-                  title={c.stock !== null ? "Sellable stock — each component's stock ÷ qty needed, then the least of those" : undefined}
                 >
-                  {!c.empty && c.stock !== null ? `${c.stock} in stock` : ""}
-                </span>
-                <span style={{ width: 90, flexShrink: 0, textAlign: "right", fontSize: 13, color: "var(--muted)" }}>
-                  {c.empty ? (
-                    <span style={{ color: "var(--amber)" }}>not built yet</span>
-                  ) : c.missing ? (
-                    "needs item fix"
-                  ) : (
-                    money(c.giftIncluded ? b.storedPrice : c.target)
-                  )}
-                </span>
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>
-                  {open ? "▾" : "▸"}
-                </span>
-              </button>
-              <button
-                onClick={() => onDelete(b)}
-                title="Delete bundle"
-                style={{ ...xBtn, marginRight: 10, flexShrink: 0 }}
-              >
-                ✕
-              </button>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: c.empty
+                        ? "var(--line)"
+                        : c.stale
+                          ? "var(--clay)"
+                          : "var(--sage)",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600 }}>
+                    {b.name}
+                    {c.dupName && (
+                      <span
+                        title="Another bundle has this exact same name — ambiguous for matching/syncing. Rename one of them."
+                        style={{
+                          marginLeft: 7,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--amber)",
+                          border: "1px solid var(--amber)",
+                          borderRadius: 999,
+                          padding: "1px 7px",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        dup name
+                      </span>
+                    )}
+                    {c.hasOOS && (
+                      <span
+                        title={`Out of stock: ${c.oosItems.map((x) => x.product.name).join(", ")}`}
+                        style={{
+                          marginLeft: 7,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--clay)",
+                          border: "1px solid var(--clay)",
+                          borderRadius: 999,
+                          padding: "1px 7px",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        oos
+                      </span>
+                    )}
+                    {b.giftIncluded && (
+                      <span
+                        title="Gift / packaging price included"
+                        style={{
+                          marginLeft: 7,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--amber)",
+                          border: "1px solid var(--amber)",
+                          borderRadius: 999,
+                          padding: "1px 7px",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        gift
+                      </span>
+                    )}
+                    {b.skipped && (
+                      <span
+                        title="Skipped — kept out of the worklist"
+                        style={{
+                          marginLeft: 7,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--sage)",
+                          border: "1px solid var(--sage)",
+                          borderRadius: 999,
+                          padding: "1px 7px",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        skipped
+                      </span>
+                    )}
+                    {b.note && (
+                      <span
+                        title={b.note}
+                        style={{
+                          marginLeft: 6,
+                          fontSize: 12,
+                          color: "var(--muted)",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        ✎
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      width: 90,
+                      flexShrink: 0,
+                      textAlign: "right",
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color:
+                        c.stock !== null && c.stock <= 0
+                          ? "var(--clay)"
+                          : "var(--muted)",
+                    }}
+                    title={
+                      c.stock !== null
+                        ? "Sellable stock — each component's stock ÷ qty needed, then the least of those"
+                        : undefined
+                    }
+                  >
+                    {!c.empty && c.stock !== null ? `${c.stock} in stock` : ""}
+                  </span>
+                  <span
+                    style={{
+                      width: 90,
+                      flexShrink: 0,
+                      textAlign: "right",
+                      fontSize: 13,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    {c.empty ? (
+                      <span style={{ color: "var(--amber)" }}>
+                        not built yet
+                      </span>
+                    ) : c.missing ? (
+                      "needs item fix"
+                    ) : (
+                      money(c.giftIncluded ? b.storedPrice : c.target)
+                    )}
+                  </span>
+                  <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                    {open ? "▾" : "▸"}
+                  </span>
+                </button>
+                <button
+                  onClick={() => onDelete(b)}
+                  title="Delete bundle"
+                  style={{ ...xBtn, marginRight: 10, flexShrink: 0 }}
+                >
+                  ✕
+                </button>
               </div>
               {open && (
                 <BundleEditor
@@ -2446,8 +2525,8 @@ function BundleEditor({
         <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.4 }}>
           {b.active === false ? (
             <span style={{ color: "var(--clay)", fontWeight: 600 }}>
-              Discontinued — hidden from the main list and worklist. Find it
-              in the Discontinued tab.
+              Discontinued — hidden from the main list and worklist. Find it in
+              the Discontinued tab.
             </span>
           ) : (
             <span>
@@ -2678,18 +2757,25 @@ function Products({
   // all | used | unused | oos | atelier — jumping in from a bundle's
   // component needs to land on "atelier" instead of "all" when that's
   // where the target product actually lives, or it'd show no matches
+  // opening the tab normally starts on out-of-stock; a jump stays on all/atelier
   const [usageFilter, setUsageFilter] = useState(() => {
-    if (!initialQuery) return "all";
-    const match = products.find((p) => (p.sku && p.sku === initialQuery) || p.name === initialQuery);
+    if (!initialQuery) return "oos";
+    const match = products.find(
+      (p) => (p.sku && p.sku === initialQuery) || p.name === initialQuery,
+    );
     return match && isMarbleAtelier(match.name) ? "atelier" : "all";
   });
   const [sortBy, setSortBy] = useState(null); // null | "name" | "price" | "stock"
   const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortBy(col); setSortDir("asc"); }
+    else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
   };
-  const sortArrow = (col) => (sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+  const sortArrow = (col) =>
+    sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "";
   const isOOS = (p) => p.active && p.stockTracked && (p.stock || 0) <= 0;
   const normalProducts = useMemo(
     () => products.filter((p) => !isMarbleAtelier(p.name)),
@@ -2703,7 +2789,9 @@ function Products({
   // so "which bundles use this" is visible immediately, no extra click
   const [expanded, setExpanded] = useState(() => {
     if (!initialQuery) return null;
-    const match = products.find((p) => (p.sku && p.sku === initialQuery) || p.name === initialQuery);
+    const match = products.find(
+      (p) => (p.sku && p.sku === initialQuery) || p.name === initialQuery,
+    );
     return match ? match.id : null;
   });
   const priceFocus = useRef(null); // {id,value} captured when a price field gains focus
@@ -2785,6 +2873,7 @@ function Products({
     };
     setProducts([np, ...products]);
     setQ("");
+    setUsageFilter("all"); // the new product wouldn't show under "oos"
   };
 
   // counts for the filter pills
@@ -2797,7 +2886,14 @@ function Products({
       if (isOOS(p)) oos++;
     });
     const archived = normalProducts.filter((p) => !p.active).length;
-    return { all: normalProducts.length, used, unused, oos, archived, atelier: atelierProducts.length };
+    return {
+      all: normalProducts.length,
+      used,
+      unused,
+      oos,
+      archived,
+      atelier: atelierProducts.length,
+    };
   }, [normalProducts, atelierProducts, usage]);
 
   return (
@@ -2836,8 +2932,16 @@ function Products({
             ["used", `In a bundle (${counts.used})`, false],
             ["unused", `Not in any bundle (${counts.unused})`, false],
             ["oos", `Out of stock (${counts.oos})`, counts.oos === 0],
-            ["archived", `Archived (${counts.archived})`, counts.archived === 0],
-            ["atelier", `Marble Atelier (${counts.atelier})`, counts.atelier === 0],
+            [
+              "archived",
+              `Archived (${counts.archived})`,
+              counts.archived === 0,
+            ],
+            [
+              "atelier",
+              `Marble Atelier (${counts.atelier})`,
+              counts.atelier === 0,
+            ],
           ].map(([k, label, hideAtZero]) => {
             if (hideAtZero && usageFilter !== k) return null;
             return (
@@ -2936,14 +3040,22 @@ function Products({
           </span>
           <span>SKU</span>
           <span
-            style={{ textAlign: "right", cursor: "pointer", userSelect: "none" }}
+            style={{
+              textAlign: "right",
+              cursor: "pointer",
+              userSelect: "none",
+            }}
             onClick={() => toggleSort("price")}
             title="Sort by price"
           >
             Price{sortArrow("price")}
           </span>
           <span
-            style={{ textAlign: "right", cursor: "pointer", userSelect: "none" }}
+            style={{
+              textAlign: "right",
+              cursor: "pointer",
+              userSelect: "none",
+            }}
             onClick={() => toggleSort("stock")}
             title="Sort by stock"
           >
@@ -3134,7 +3246,11 @@ function Products({
                     <button
                       key={i}
                       onClick={() => onJumpToBundle && onJumpToBundle(u)}
-                      title={onJumpToBundle ? `Open "${u.name}" in Bundles` : undefined}
+                      title={
+                        onJumpToBundle
+                          ? `Open "${u.name}" in Bundles`
+                          : undefined
+                      }
                       style={{
                         fontSize: 12.5,
                         background: "var(--sageDim)",
@@ -3645,20 +3761,41 @@ function Discontinued({
 // level it moves to "Restocked", notes intact. See lib/zohoReorder.js.
 function Reorder({ doc, setDoc, stickyTop, flash }) {
   const [q, setQ] = useState("");
-  const [vendor, setVendor] = useState("all");
+  const [vendor, setVendor] = useState("Hollyhock");
   const [view, setView] = useState("below"); // below | restocked | all
-  const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | expected
+  const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
+  // re-render every 30s so the cooldown countdown ticks and the button
+  // re-enables on its own
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const cooldownLeft = doc.lastSyncAt
+    ? REORDER_COOLDOWN_MS - (Date.now() - new Date(doc.lastSyncAt).getTime())
+    : 0;
+  const coolingDown = cooldownLeft > 0;
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortBy(col); setSortDir("asc"); }
+    else {
+      setSortBy(col);
+      setSortDir("asc");
+    }
   };
-  const sortArrow = (col) => (sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+  const sortArrow = (col) =>
+    sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : "";
 
   const rows = useMemo(() => Object.values(doc.items || {}), [doc]);
   const inView = (r) =>
-    view === "all" ? true : view === "below" ? r.below : !r.below;
+    view === "all"
+      ? true
+      : view === "below"
+        ? r.below
+        : view === "short"
+          ? r.below && shortOf(r) > 0
+          : !r.below;
   const vendors = useMemo(() => {
     const m = {};
     rows.filter(inView).forEach((r) => {
@@ -3670,6 +3807,7 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
   const counts = useMemo(
     () => ({
       below: rows.filter((r) => r.below).length,
+      short: rows.filter((r) => r.below && shortOf(r) > 0).length,
       restocked: rows.filter((r) => !r.below).length,
       all: rows.length,
     }),
@@ -3686,20 +3824,31 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
     const byName = (a, b) => a.name.localeCompare(b.name);
     list.sort((a, b) => {
       if (sortBy === "name") return dir * byName(a, b);
-      if (sortBy === "stock") return dir * (a.stockOnHand - b.stockOnHand) || byName(a, b);
+      if (sortBy === "stock")
+        return dir * (a.stockOnHand - b.stockOnHand) || byName(a, b);
+      if (sortBy === "receive")
+        return dir * ((a.toReceive || 0) - (b.toReceive || 0)) || byName(a, b);
+      if (sortBy === "short")
+        return dir * (shortOf(a) - shortOf(b)) || byName(a, b);
       if (sortBy === "expected") {
         // rows with no date always sink to the bottom
         if (!a.expectedDate !== !b.expectedDate) return a.expectedDate ? -1 : 1;
-        return dir * (a.expectedDate || "").localeCompare(b.expectedDate || "") || byName(a, b);
+        return (
+          dir * (a.expectedDate || "").localeCompare(b.expectedDate || "") ||
+          byName(a, b)
+        );
       }
-      return dir * (a.vendor || "~").localeCompare(b.vendor || "~") || byName(a, b);
+      return (
+        dir * (a.vendor || "~").localeCompare(b.vendor || "~") || byName(a, b)
+      );
     });
     return list;
   }, [rows, q, vendor, view, sortBy, sortDir]);
 
   // vendor picked no longer has rows in this view — fall back to all
   useEffect(() => {
-    if (vendor !== "all" && !vendors.some(([v]) => v === vendor)) setVendor("all");
+    if (vendor !== "all" && !vendors.some(([v]) => v === vendor))
+      setVendor("all");
   }, [vendors]);
 
   const refresh = async () => {
@@ -3708,13 +3857,17 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
       const r = await fetch("/api/reorder", { method: "POST" });
       const j = await r.json();
       if (r.status === 429) {
-        flash(`Refreshed ${timeAgo(j.lastSyncAt)} — try again in ${Math.ceil(j.retryAfterMs / 60000)} min`);
+        flash(
+          `Refreshed ${timeAgo(j.lastSyncAt)} — try again in ${Math.ceil(j.retryAfterMs / 60000)} min`,
+        );
       } else if (!j.ok) {
         flash(`Zoho refresh failed: ${j.detail || j.error}`);
       } else {
         setDoc(j.data);
         const s = j.summary;
-        flash(`Refreshed from Zoho · ${s.below} below reorder${s.added ? ` · ${s.added} new` : ""}`);
+        flash(
+          `Refreshed from Zoho · ${s.below} below reorder${s.added ? ` · ${s.added} new` : ""}`,
+        );
       }
     } catch {
       flash("Zoho refresh failed — check your connection");
@@ -3724,7 +3877,10 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
 
   const saveRow = async (id, patch) => {
     // optimistic, so typing/picking feels instant
-    setDoc((d) => ({ ...d, items: { ...d.items, [id]: { ...d.items[id], ...patch } } }));
+    setDoc((d) => ({
+      ...d,
+      items: { ...d.items, [id]: { ...d.items[id], ...patch } },
+    }));
     try {
       const r = await fetch("/api/reorder", {
         method: "PATCH",
@@ -3750,14 +3906,25 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
         paddingBottom: 10,
       }}
     >
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search name, SKU or notes…"
           style={{ ...search, minWidth: 220 }}
         />
-        <select value={vendor} onChange={(e) => setVendor(e.target.value)} style={{ ...sel, padding: "9px 10px", fontSize: 14 }}>
+        <select
+          value={vendor}
+          onChange={(e) => setVendor(e.target.value)}
+          style={{ ...sel, padding: "9px 10px", fontSize: 14 }}
+        >
           <option value="all">All vendors</option>
           {vendors.map(([v, n]) => (
             <option key={v} value={v}>
@@ -3767,24 +3934,39 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
         </select>
         <button
           onClick={refresh}
-          disabled={refreshing}
-          title="Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept."
-          style={{ ...btnSec, opacity: refreshing ? 0.55 : 1 }}
+          disabled={refreshing || coolingDown}
+          title={
+            coolingDown
+              ? `Refreshed ${timeAgo(doc.lastSyncAt)} — available again in ${Math.ceil(cooldownLeft / 60000)} min (once every 30 min)`
+              : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept."
+          }
+          style={{
+            ...btnSec,
+            opacity: refreshing || coolingDown ? 0.55 : 1,
+            cursor: refreshing || coolingDown ? "default" : "pointer",
+          }}
         >
           {refreshing
             ? "Refreshing…"
-            : doc.lastSyncAt
-              ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}`
-              : "Refresh from Zoho"}
+            : coolingDown
+              ? `Refreshed ${timeAgo(doc.lastSyncAt)} · again in ${Math.ceil(cooldownLeft / 60000)}m`
+              : doc.lastSyncAt
+                ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}`
+                : "Refresh from Zoho"}
         </button>
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
         {[
           ["below", `Below reorder level (${counts.below})`],
+          ["short", `Needs ordering (${counts.short})`],
           ["restocked", `Restocked (${counts.restocked})`],
           ["all", `All (${counts.all})`],
         ].map(([k, label]) => (
-          <button key={k} onClick={() => setView(k)} style={{ ...catPill(view === k), textTransform: "none" }}>
+          <button
+            key={k}
+            onClick={() => setView(k)}
+            style={{ ...catPill(view === k), textTransform: "none" }}
+          >
             {label}
           </button>
         ))}
@@ -3808,7 +3990,14 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
           <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
             Not pulled from Zoho yet
           </h2>
-          <p style={{ color: "var(--muted)", maxWidth: 440, margin: "0 auto", lineHeight: 1.5 }}>
+          <p
+            style={{
+              color: "var(--muted)",
+              maxWidth: 440,
+              margin: "0 auto",
+              lineHeight: 1.5,
+            }}
+          >
             Click <b>Refresh from Zoho</b> to load every Zoho Inventory item
             that's below its reorder level, with stock on hand and what's still
             to be received on open purchase orders.
@@ -3817,10 +4006,16 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
       </div>
     );
 
+  // one vendor picked → every row would say the same name, so drop the column
+  const showVendor = vendor === "all";
   const th = (label, col, align) => (
     <div
       onClick={col ? () => toggleSort(col) : undefined}
-      style={{ textAlign: align || "left", cursor: col ? "pointer" : "default", userSelect: "none" }}
+      style={{
+        textAlign: align || "left",
+        cursor: col ? "pointer" : "default",
+        userSelect: "none",
+      }}
     >
       {label}
       {col && sortArrow(col)}
@@ -3838,10 +4033,10 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
           overflowX: "auto",
         }}
       >
-        <div style={{ minWidth: 1020 }}>
+        <div style={{ minWidth: showVendor ? 1170 : 1030 }}>
           <div
             style={{
-              ...reorderGrid,
+              ...reorderGrid(showVendor),
               padding: "10px 16px",
               borderBottom: "1px solid var(--line)",
               fontSize: 11,
@@ -3852,46 +4047,189 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
             }}
           >
             {th("Name", "name")}
-            {th("Vendor", "vendor")}
-            {th("Reorder level", null, "right")}
-            {th("Stock on hand", "stock", "right")}
-            {th("To be received", null, "right")}
+            {showVendor && th("Vendor", "vendor")}
+            {th("Reorder level", null, "center")}
+            {th("Stock on hand", "stock", "center")}
+            {th("To be received", "receive", "center")}
             {th("Expected by", "expected")}
             {th("Notes")}
+            {th("Still short", "short", "center")}
           </div>
           {!shown.length && (
-            <div style={{ padding: "30px 16px", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
+            <div
+              style={{
+                padding: "30px 16px",
+                textAlign: "center",
+                color: "var(--muted)",
+                fontSize: 14,
+              }}
+            >
               {view === "below" && !q && vendor === "all"
                 ? "Nothing below its reorder level right now."
                 : "No items match."}
             </div>
           )}
           {shown.map((r) => (
-            <ReorderRow key={r.id} r={r} onSave={saveRow} />
+            <ReorderRow
+              key={r.id}
+              r={r}
+              onSave={saveRow}
+              showVendor={showVendor}
+            />
           ))}
         </div>
       </div>
       <p style={{ ...note, marginTop: 10 }}>
         {shown.length} item{shown.length === 1 ? "" : "s"} · numbers from Zoho
         Inventory (also refreshed automatically every Monday). "To be received"
-        counts open purchase orders only.
+        counts open purchase orders only. "Still short" = reorder level − stock
+        on hand − to be received.
       </p>
     </div>
   );
 }
 
-function ReorderRow({ r, onSave }) {
-  // notes save on blur (or Enter), not per keystroke
+// how many more to order once open POs land: reorder level − stock − incoming
+const shortOf = (r) =>
+  Math.max(
+    0,
+    (r.reorderLevel || 0) - (r.stockOnHand || 0) - (r.toReceive || 0),
+  );
+
+// "15 Oct" + a relative hint ("in 3 days" / "today" / "4 days late") for the
+// Expected-by cell. Dates are plain yyyy-mm-dd, compared as local days.
+function describeDate(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((date - today) / 86400000);
+  const label = date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(y !== today.getFullYear() && { year: "numeric" }),
+  });
+  const rel =
+    days === 0
+      ? "today"
+      : days === 1
+        ? "tomorrow"
+        : days > 0
+          ? `in ${days} days`
+          : days === -1
+            ? "1 day late"
+            : `${-days} days late`;
+  return { label, rel, late: days < 0 };
+}
+
+function ExpectedDateCell({ value, onChange }) {
+  const ref = useRef(null);
+  // the native picker opens straight from the text link — no always-visible
+  // empty "dd-mm-yyyy" box on every row
+  const open = () => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      el.showPicker();
+    } catch {
+      el.focus();
+    }
+  };
+  const d = value ? describeDate(value) : null;
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <input
+        ref={ref}
+        type="date"
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        tabIndex={-1}
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: 0,
+          bottom: 0,
+          width: 1,
+          height: 1,
+          opacity: 0,
+          border: 0,
+          padding: 0,
+        }}
+      />
+      {d ? (
+        <>
+          <button
+            onClick={open}
+            title="Change date"
+            style={{ ...cellLink, textAlign: "left" }}
+          >
+            <div
+              style={{
+                fontWeight: 600,
+                color: d.late ? "var(--clay)" : "var(--ink)",
+              }}
+            >
+              {d.label}
+            </div>
+            <div
+              style={{
+                fontSize: 11.5,
+                color: d.late ? "var(--clay)" : "var(--muted)",
+              }}
+            >
+              {d.rel}
+            </div>
+          </button>
+          <button
+            onClick={() => onChange("")}
+            title="Clear date"
+            style={{ ...xBtn, fontSize: 12 }}
+          >
+            ✕
+          </button>
+        </>
+      ) : (
+        <button
+          onClick={open}
+          style={{ ...cellLink, color: "var(--muted)", fontSize: 12.5 }}
+        >
+          + Add date
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ReorderRow({ r, onSave, showVendor }) {
+  // notes save on blur (or Enter), not per keystroke; Shift+Enter = new line
   const [draft, setDraft] = useState(r.notes || "");
   useEffect(() => setDraft(r.notes || ""), [r.notes]);
   const commitNotes = () => {
     if (draft !== (r.notes || "")) onSave(r.id, { notes: draft });
   };
-  const unit = r.unit ? ` ${r.unit}` : "";
+  // grow the notes box to fit whatever's written, so nothing gets cut off
+  const notesRef = useRef(null);
+  useEffect(() => {
+    const el = notesRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+  // almost everything is in pcs, so the unit is only shown when it isn't
+  const u = (r.unit || "").toLowerCase();
+  const unit = u && u !== "pcs" ? ` ${u}` : "";
+  const short = shortOf(r);
   return (
     <div
       style={{
-        ...reorderGrid,
+        ...reorderGrid(showVendor),
         padding: "10px 16px",
         borderBottom: "1px solid var(--line)",
         alignItems: "center",
@@ -3908,36 +4246,83 @@ function ReorderRow({ r, onSave }) {
           {r.missing && " · no longer in Zoho's reorder list"}
         </div>
       </div>
-      <div style={{ fontSize: 13, color: r.vendor ? "var(--ink)" : "var(--muted)" }}>
-        {r.vendor || "No vendor"}
+      {showVendor && (
+        <div
+          style={{
+            fontSize: 13,
+            color: r.vendor ? "var(--ink)" : "var(--muted)",
+          }}
+        >
+          {r.vendor || "No vendor"}
+        </div>
+      )}
+      <div style={midCell}>
+        {r.reorderLevel}
+        {unit}
       </div>
-      <div style={numCell}>{r.reorderLevel}{unit}</div>
       <div
         style={{
-          ...numCell,
+          ...midCell,
           fontWeight: 600,
-          color: r.stockOnHand <= 0 ? "var(--clay)" : r.below ? "var(--amber)" : "var(--sage)",
+          color:
+            r.stockOnHand <= 0
+              ? "var(--clay)"
+              : r.below
+                ? "var(--amber)"
+                : "var(--sage)",
         }}
       >
-        {r.stockOnHand}{unit}
+        {r.stockOnHand}
+        {unit}
       </div>
-      <div style={{ ...numCell, color: r.toReceive ? "var(--ink)" : "var(--muted)" }}>
-        {r.toReceive || 0}{unit}
+      <div
+        style={{
+          ...midCell,
+          color: r.toReceive ? "var(--ink)" : "var(--muted)",
+        }}
+      >
+        {r.toReceive || 0}
+        {unit}
       </div>
-      <input
-        type="date"
+      <ExpectedDateCell
         value={r.expectedDate || ""}
-        onChange={(e) => onSave(r.id, { expectedDate: e.target.value })}
-        style={{ ...inp, fontSize: 13, padding: "6px 8px" }}
+        onChange={(v) => onSave(r.id, { expectedDate: v })}
       />
-      <input
+      <textarea
+        ref={notesRef}
+        className="cellEdit"
+        rows={1}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commitNotes}
-        onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            e.target.blur();
+          }
+        }}
         placeholder="Add a note…"
-        style={{ ...inp, fontSize: 13, padding: "6px 8px", width: "100%" }}
+        style={{
+          fontSize: 13,
+          lineHeight: 1.4,
+          padding: "5px 8px",
+          width: "100%",
+          borderRadius: 7,
+          resize: "none",
+          overflow: "hidden",
+          fontFamily: "inherit",
+          color: "var(--ink)",
+        }}
       />
+      <div
+        style={{
+          ...midCell,
+          fontWeight: 600,
+          color: short ? "var(--clay)" : "var(--sage)",
+        }}
+      >
+        {!r.below ? "—" : short ? `${short}${unit}` : "✓ covered"}
+      </div>
     </div>
   );
 }
@@ -4137,10 +4522,24 @@ const wlGrid = {
   gap: 10,
 };
 const numCell = { textAlign: "right", fontSize: 14 };
-const reorderGrid = {
+// matches REFRESH_COOLDOWN_MS in lib/zohoReorder.js (the server enforces it)
+const REORDER_COOLDOWN_MS = 30 * 60 * 1000;
+// name · [vendor] · reorder · stock · to receive · expected · notes · short
+const reorderGrid = (showVendor) => ({
   display: "grid",
-  gridTemplateColumns: "minmax(220px,1.6fr) 150px 90px 100px 105px 140px minmax(200px,1.4fr)",
+  gridTemplateColumns: `minmax(240px,2fr) ${showVendor ? "130px " : ""}90px 100px 110px 120px minmax(160px,1fr) 100px`,
   gap: 12,
+});
+const midCell = { textAlign: "center", fontSize: 14 };
+// a plain-text button used for in-cell actions ("+ Add date", a set date)
+const cellLink = {
+  background: "none",
+  border: "none",
+  padding: "2px 0",
+  fontSize: 13,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  lineHeight: 1.3,
 };
 const prodGrid = {
   display: "grid",

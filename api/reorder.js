@@ -5,7 +5,7 @@
 //   POST                        → refresh numbers from Zoho (see lib/zohoReorder.js)
 //   PATCH {id, expectedDate?, notes?} → save one row's hand-entered fields
 //
-// Refresh is throttled to once per 10 min (Zoho caps API calls per day, and
+// Refresh is throttled to once per 30 min (Zoho caps API calls per day, and
 // this is reachable by anyone who can load the app).
 //
 // Env vars: the Upstash pair (same as api/data.js) plus
@@ -19,6 +19,7 @@ import {
   fetchZohoReorder,
   mergeReorder,
   patchReorderRow,
+  REFRESH_COOLDOWN_MS,
 } from "../lib/zohoReorder.js";
 
 let _redis;
@@ -36,7 +37,7 @@ function getRedis() {
   return _redis;
 }
 
-const THROTTLE_MS = 10 * 60 * 1000;
+const THROTTLE_MS = REFRESH_COOLDOWN_MS;
 
 export default async function handler(req, res) {
   try {

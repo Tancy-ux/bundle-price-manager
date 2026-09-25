@@ -115,7 +115,7 @@ function App() {
   // a future Shopify sync won't re-add them. Restoring from Trash clears the entry.
   const [excludedSkus, setExcludedSkus] = useState([]);
   const [excludedBundleNames, setExcludedBundleNames] = useState([]);
-  const [tab, setTab] = useState("worklist");
+  const [tab, setTab] = useState("reorder");
   // set when jumping from a bundle's component to Products, so it opens
   // pre-searched to that exact item instead of the full list
   const [productJumpQuery, setProductJumpQuery] = useState("");
@@ -575,7 +575,7 @@ function App() {
   const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   return /*#__PURE__*/React.createElement("div", {
     style: {
-      maxWidth: 980,
+      maxWidth: 1280,
       margin: "0 auto",
       padding: "0 20px 60px"
     }
@@ -654,16 +654,7 @@ function App() {
       opacity: syncing || !syncEligible ? 0.55 : 1,
       cursor: syncing || !syncEligible ? "default" : "pointer"
     }
-  }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12
-    }
-  }, /*#__PURE__*/React.createElement(GlobalSearch, {
-    products: products,
-    bundles: bundles,
-    onJumpToProduct: jumpToProduct,
-    onJumpToBundle: jumpToBundle
-  })), /*#__PURE__*/React.createElement("nav", {
+  }, syncing ? "Syncing…" : lastSyncAt ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("nav", {
     style: {
       display: "flex",
       gap: 2,
@@ -671,7 +662,7 @@ function App() {
       borderBottom: "1px solid var(--line)",
       flexWrap: "wrap"
     }
-  }, [["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["whereused", "In bundles"], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["discontinued", `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`], ["reorder", `Reorder${reorderCount ? ` (${reorderCount})` : ""}`], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["reorder", `Zoho Inventory${reorderCount ? ` (${reorderCount})` : ""}`], ["bundles", "Bundles"], ["products", "Products"], ["worklist", `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`], ["discontinued", `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`], ["stock", `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`], ["whereused", "In bundles"], ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => {
       setTab(k);
@@ -1421,8 +1412,9 @@ function Bundles({
   // all | empty | filled | oos | dup | single — jumping in needs to land on
   // "single" instead of "all" when the target bundle lives in that silo,
   // or it'd show no matches
+  // opening the tab normally starts on out-of-stock; a jump stays on all/single
   const [show, setShow] = useState(() => {
-    if (!initialOpenBundle) return "all";
+    if (!initialOpenBundle) return "oos";
     const b = bundles.find(x => x.id === initialOpenBundle.id);
     return b && isSingleItemCandidate(b.name) ? "single" : "all";
   });
@@ -1485,6 +1477,9 @@ function Bundles({
   }, [q, show, cat, sortBy, sortDir]);
   const shown = sorted.slice(0, visible);
   const emptyCount = useMemo(() => normalBundles.filter(b => b.items.length === 0).length, [normalBundles]);
+  // "Not built yet" / "Built" only mean something when both are non-zero —
+  // otherwise one is empty and the other just repeats "All"
+  const builtSplitUseless = emptyCount === 0 || emptyCount === normalBundles.length;
   const oosCount = useMemo(() => normalBundles.filter(b => compute(b).hasOOS).length, [normalBundles, products]);
   const dupCount = useMemo(() => normalBundles.filter(b => compute(b).dupName).length, [normalBundles]);
   const singleCount = singleBundles.length;
@@ -1521,6 +1516,7 @@ function Bundles({
     setBundles([nb, ...bundles]);
     setOpenId(nb.id);
     setQ("");
+    setShow("all"); // the new, empty bundle wouldn't show under "oos"
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1552,7 +1548,7 @@ function Bundles({
       marginBottom: 8,
       flexWrap: "wrap"
     }
-  }, [["all", `All (${normalBundles.length})`, false], ["empty", `Not built yet (${emptyCount})`, false], ["filled", `Built (${normalBundles.length - emptyCount})`, false], ["oos", `Out of stock (${oosCount})`, oosCount === 0], ["dup", `Duplicate names (${dupCount})`, dupCount === 0], ["single", `Marble vase / Lush / Diverge (${singleCount})`, singleCount === 0]].map(([k, label, hideAtZero]) => {
+  }, [["all", `All (${normalBundles.length})`, false], ["empty", `Not built yet (${emptyCount})`, builtSplitUseless], ["filled", `Built (${normalBundles.length - emptyCount})`, builtSplitUseless], ["oos", `Out of stock (${oosCount})`, oosCount === 0], ["dup", `Duplicate names (${dupCount})`, dupCount === 0], ["single", `Marble vase / Lush / Diverge (${singleCount})`, singleCount === 0]].map(([k, label, hideAtZero]) => {
     // status/candidate pills hide themselves when there's nothing to show —
     // no point cluttering the bar with "(0)" — but stay visible if selected
     if (hideAtZero && show !== k) return null;
@@ -2391,8 +2387,9 @@ function Products({
   // all | used | unused | oos | atelier — jumping in from a bundle's
   // component needs to land on "atelier" instead of "all" when that's
   // where the target product actually lives, or it'd show no matches
+  // opening the tab normally starts on out-of-stock; a jump stays on all/atelier
   const [usageFilter, setUsageFilter] = useState(() => {
-    if (!initialQuery) return "all";
+    if (!initialQuery) return "oos";
     const match = products.find(p => p.sku && p.sku === initialQuery || p.name === initialQuery);
     return match && isMarbleAtelier(match.name) ? "atelier" : "all";
   });
@@ -2484,6 +2481,7 @@ function Products({
     };
     setProducts([np, ...products]);
     setQ("");
+    setUsageFilter("all"); // the new product wouldn't show under "oos"
   };
 
   // counts for the filter pills
@@ -3209,11 +3207,20 @@ function Reorder({
   flash
 }) {
   const [q, setQ] = useState("");
-  const [vendor, setVendor] = useState("all");
+  const [vendor, setVendor] = useState("Hollyhock");
   const [view, setView] = useState("below"); // below | restocked | all
-  const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | expected
+  const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
+  // re-render every 30s so the cooldown countdown ticks and the button
+  // re-enables on its own
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const cooldownLeft = doc.lastSyncAt ? REORDER_COOLDOWN_MS - (Date.now() - new Date(doc.lastSyncAt).getTime()) : 0;
+  const coolingDown = cooldownLeft > 0;
   const toggleSort = col => {
     if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
       setSortBy(col);
@@ -3222,7 +3229,7 @@ function Reorder({
   };
   const sortArrow = col => sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "";
   const rows = useMemo(() => Object.values(doc.items || {}), [doc]);
-  const inView = r => view === "all" ? true : view === "below" ? r.below : !r.below;
+  const inView = r => view === "all" ? true : view === "below" ? r.below : view === "short" ? r.below && shortOf(r) > 0 : !r.below;
   const vendors = useMemo(() => {
     const m = {};
     rows.filter(inView).forEach(r => {
@@ -3233,6 +3240,7 @@ function Reorder({
   }, [rows, view]);
   const counts = useMemo(() => ({
     below: rows.filter(r => r.below).length,
+    short: rows.filter(r => r.below && shortOf(r) > 0).length,
     restocked: rows.filter(r => !r.below).length,
     all: rows.length
   }), [rows]);
@@ -3243,6 +3251,8 @@ function Reorder({
     list.sort((a, b) => {
       if (sortBy === "name") return dir * byName(a, b);
       if (sortBy === "stock") return dir * (a.stockOnHand - b.stockOnHand) || byName(a, b);
+      if (sortBy === "receive") return dir * ((a.toReceive || 0) - (b.toReceive || 0)) || byName(a, b);
+      if (sortBy === "short") return dir * (shortOf(a) - shortOf(b)) || byName(a, b);
       if (sortBy === "expected") {
         // rows with no date always sink to the bottom
         if (!a.expectedDate !== !b.expectedDate) return a.expectedDate ? -1 : 1;
@@ -3353,20 +3363,21 @@ function Reorder({
     value: v
   }, v, " (", n, ")"))), /*#__PURE__*/React.createElement("button", {
     onClick: refresh,
-    disabled: refreshing,
-    title: "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept.",
+    disabled: refreshing || coolingDown,
+    title: coolingDown ? `Refreshed ${timeAgo(doc.lastSyncAt)} — available again in ${Math.ceil(cooldownLeft / 60000)} min (once every 30 min)` : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept.",
     style: {
       ...btnSec,
-      opacity: refreshing ? 0.55 : 1
+      opacity: refreshing || coolingDown ? 0.55 : 1,
+      cursor: refreshing || coolingDown ? "default" : "pointer"
     }
-  }, refreshing ? "Refreshing…" : doc.lastSyncAt ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}` : "Refresh from Zoho")), /*#__PURE__*/React.createElement("div", {
+  }, refreshing ? "Refreshing…" : coolingDown ? `Refreshed ${timeAgo(doc.lastSyncAt)} · again in ${Math.ceil(cooldownLeft / 60000)}m` : doc.lastSyncAt ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}` : "Refresh from Zoho")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       marginTop: 10,
       flexWrap: "wrap"
     }
-  }, [["below", `Below reorder level (${counts.below})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["below", `Below reorder level (${counts.below})`], ["short", `Needs ordering (${counts.short})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setView(k),
     style: {
@@ -3396,6 +3407,9 @@ function Reorder({
       lineHeight: 1.5
     }
   }, "Click ", /*#__PURE__*/React.createElement("b", null, "Refresh from Zoho"), " to load every Zoho Inventory item that's below its reorder level, with stock on hand and what's still to be received on open purchase orders.")));
+
+  // one vendor picked → every row would say the same name, so drop the column
+  const showVendor = vendor === "all";
   const th = (label, col, align) => /*#__PURE__*/React.createElement("div", {
     onClick: col ? () => toggleSort(col) : undefined,
     style: {
@@ -3413,11 +3427,11 @@ function Reorder({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: 1020
+      minWidth: showVendor ? 1170 : 1030
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      ...reorderGrid,
+      ...reorderGrid(showVendor),
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       fontSize: 11,
@@ -3426,7 +3440,7 @@ function Reorder({
       textTransform: "uppercase",
       color: "var(--muted)"
     }
-  }, th("Name", "name"), th("Vendor", "vendor"), th("Reorder level", null, "right"), th("Stock on hand", "stock", "right"), th("To be received", null, "right"), th("Expected by", "expected"), th("Notes")), !shown.length && /*#__PURE__*/React.createElement("div", {
+  }, th("Name", "name"), showVendor && th("Vendor", "vendor"), th("Reorder level", null, "center"), th("Stock on hand", "stock", "center"), th("To be received", "receive", "center"), th("Expected by", "expected"), th("Notes"), th("Still short", "short", "center")), !shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "30px 16px",
       textAlign: "center",
@@ -3436,19 +3450,121 @@ function Reorder({
   }, view === "below" && !q && vendor === "all" ? "Nothing below its reorder level right now." : "No items match."), shown.map(r => /*#__PURE__*/React.createElement(ReorderRow, {
     key: r.id,
     r: r,
-    onSave: saveRow
+    onSave: saveRow,
+    showVendor: showVendor
   })))), /*#__PURE__*/React.createElement("p", {
     style: {
       ...note,
       marginTop: 10
     }
-  }, shown.length, " item", shown.length === 1 ? "" : "s", " · numbers from Zoho Inventory (also refreshed automatically every Monday). \"To be received\" counts open purchase orders only."));
+  }, shown.length, " item", shown.length === 1 ? "" : "s", " · numbers from Zoho Inventory (also refreshed automatically every Monday). \"To be received\" counts open purchase orders only. \"Still short\" = reorder level − stock on hand − to be received."));
+}
+
+// how many more to order once open POs land: reorder level − stock − incoming
+const shortOf = r => Math.max(0, (r.reorderLevel || 0) - (r.stockOnHand || 0) - (r.toReceive || 0));
+
+// "15 Oct" + a relative hint ("in 3 days" / "today" / "4 days late") for the
+// Expected-by cell. Dates are plain yyyy-mm-dd, compared as local days.
+function describeDate(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((date - today) / 86400000);
+  const label = date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(y !== today.getFullYear() && {
+      year: "numeric"
+    })
+  });
+  const rel = days === 0 ? "today" : days === 1 ? "tomorrow" : days > 0 ? `in ${days} days` : days === -1 ? "1 day late" : `${-days} days late`;
+  return {
+    label,
+    rel,
+    late: days < 0
+  };
+}
+function ExpectedDateCell({
+  value,
+  onChange
+}) {
+  const ref = useRef(null);
+  // the native picker opens straight from the text link — no always-visible
+  // empty "dd-mm-yyyy" box on every row
+  const open = () => {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      el.showPicker();
+    } catch {
+      el.focus();
+    }
+  };
+  const d = value ? describeDate(value) : null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      display: "flex",
+      alignItems: "center",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    ref: ref,
+    type: "date",
+    value: value || "",
+    onChange: e => onChange(e.target.value),
+    tabIndex: -1,
+    "aria-hidden": "true",
+    style: {
+      position: "absolute",
+      left: 0,
+      bottom: 0,
+      width: 1,
+      height: 1,
+      opacity: 0,
+      border: 0,
+      padding: 0
+    }
+  }), d ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: open,
+    title: "Change date",
+    style: {
+      ...cellLink,
+      textAlign: "left"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      color: d.late ? "var(--clay)" : "var(--ink)"
+    }
+  }, d.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: d.late ? "var(--clay)" : "var(--muted)"
+    }
+  }, d.rel)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onChange(""),
+    title: "Clear date",
+    style: {
+      ...xBtn,
+      fontSize: 12
+    }
+  }, "✕")) : /*#__PURE__*/React.createElement("button", {
+    onClick: open,
+    style: {
+      ...cellLink,
+      color: "var(--muted)",
+      fontSize: 12.5
+    }
+  }, "+ Add date"));
 }
 function ReorderRow({
   r,
-  onSave
+  onSave,
+  showVendor
 }) {
-  // notes save on blur (or Enter), not per keystroke
+  // notes save on blur (or Enter), not per keystroke; Shift+Enter = new line
   const [draft, setDraft] = useState(r.notes || "");
   useEffect(() => setDraft(r.notes || ""), [r.notes]);
   const commitNotes = () => {
@@ -3456,10 +3572,21 @@ function ReorderRow({
       notes: draft
     });
   };
-  const unit = r.unit ? ` ${r.unit}` : "";
+  // grow the notes box to fit whatever's written, so nothing gets cut off
+  const notesRef = useRef(null);
+  useEffect(() => {
+    const el = notesRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+  // almost everything is in pcs, so the unit is only shown when it isn't
+  const u = (r.unit || "").toLowerCase();
+  const unit = u && u !== "pcs" ? ` ${u}` : "";
+  const short = shortOf(r);
   return /*#__PURE__*/React.createElement("div", {
     style: {
-      ...reorderGrid,
+      ...reorderGrid(showVendor),
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       alignItems: "center",
@@ -3479,48 +3606,61 @@ function ReorderRow({
       fontSize: 11.5,
       color: "var(--muted)"
     }
-  }, r.sku || "no SKU", !!(r.openPOs || []).length && ` · ${r.openPOs.map(p => p.number).join(", ")}`, r.missing && " · no longer in Zoho's reorder list")), /*#__PURE__*/React.createElement("div", {
+  }, r.sku || "no SKU", !!(r.openPOs || []).length && ` · ${r.openPOs.map(p => p.number).join(", ")}`, r.missing && " · no longer in Zoho's reorder list")), showVendor && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: r.vendor ? "var(--ink)" : "var(--muted)"
     }
   }, r.vendor || "No vendor"), /*#__PURE__*/React.createElement("div", {
-    style: numCell
+    style: midCell
   }, r.reorderLevel, unit), /*#__PURE__*/React.createElement("div", {
     style: {
-      ...numCell,
+      ...midCell,
       fontWeight: 600,
       color: r.stockOnHand <= 0 ? "var(--clay)" : r.below ? "var(--amber)" : "var(--sage)"
     }
   }, r.stockOnHand, unit), /*#__PURE__*/React.createElement("div", {
     style: {
-      ...numCell,
+      ...midCell,
       color: r.toReceive ? "var(--ink)" : "var(--muted)"
     }
-  }, r.toReceive || 0, unit), /*#__PURE__*/React.createElement("input", {
-    type: "date",
+  }, r.toReceive || 0, unit), /*#__PURE__*/React.createElement(ExpectedDateCell, {
     value: r.expectedDate || "",
-    onChange: e => onSave(r.id, {
-      expectedDate: e.target.value
-    }),
-    style: {
-      ...inp,
-      fontSize: 13,
-      padding: "6px 8px"
-    }
-  }), /*#__PURE__*/React.createElement("input", {
+    onChange: v => onSave(r.id, {
+      expectedDate: v
+    })
+  }), /*#__PURE__*/React.createElement("textarea", {
+    ref: notesRef,
+    className: "cellEdit",
+    rows: 1,
     value: draft,
     onChange: e => setDraft(e.target.value),
     onBlur: commitNotes,
-    onKeyDown: e => e.key === "Enter" && e.target.blur(),
+    onKeyDown: e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.target.blur();
+      }
+    },
     placeholder: "Add a note…",
     style: {
-      ...inp,
       fontSize: 13,
-      padding: "6px 8px",
-      width: "100%"
+      lineHeight: 1.4,
+      padding: "5px 8px",
+      width: "100%",
+      borderRadius: 7,
+      resize: "none",
+      overflow: "hidden",
+      fontFamily: "inherit",
+      color: "var(--ink)"
     }
-  }));
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      fontWeight: 600,
+      color: short ? "var(--clay)" : "var(--sage)"
+    }
+  }, !r.below ? "—" : short ? `${short}${unit}` : "✓ covered"));
 }
 function Trash({
   trash,
@@ -3715,10 +3855,27 @@ const numCell = {
   textAlign: "right",
   fontSize: 14
 };
-const reorderGrid = {
+// matches REFRESH_COOLDOWN_MS in lib/zohoReorder.js (the server enforces it)
+const REORDER_COOLDOWN_MS = 30 * 60 * 1000;
+// name · [vendor] · reorder · stock · to receive · expected · notes · short
+const reorderGrid = showVendor => ({
   display: "grid",
-  gridTemplateColumns: "minmax(220px,1.6fr) 150px 90px 100px 105px 140px minmax(200px,1.4fr)",
+  gridTemplateColumns: `minmax(240px,2fr) ${showVendor ? "130px " : ""}90px 100px 110px 120px minmax(160px,1fr) 100px`,
   gap: 12
+});
+const midCell = {
+  textAlign: "center",
+  fontSize: 14
+};
+// a plain-text button used for in-cell actions ("+ Add date", a set date)
+const cellLink = {
+  background: "none",
+  border: "none",
+  padding: "2px 0",
+  fontSize: 13,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  lineHeight: 1.3
 };
 const prodGrid = {
   display: "grid",

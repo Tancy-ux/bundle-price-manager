@@ -11,7 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { fetchShopifyCatalog, computeSync, pushVariantPrice, pushHistory } from "./lib/shopifySync.js";
 import { mergeUpserts, mergeTrash, mergeSet } from "./lib/mergeData.js";
-import { EMPTY_REORDER, zohoConfig, fetchZohoReorder, mergeReorder, patchReorderRow } from "./lib/zohoReorder.js";
+import { EMPTY_REORDER, REFRESH_COOLDOWN_MS, zohoConfig, fetchZohoReorder, mergeReorder, patchReorderRow } from "./lib/zohoReorder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
@@ -186,6 +186,13 @@ app.get("/api/reorder", (req, res) => {
 
 app.post("/api/reorder", async (req, res) => {
   try {
+    const prev = readReorder();
+    if (prev.lastSyncAt) {
+      const elapsed = Date.now() - new Date(prev.lastSyncAt).getTime();
+      if (elapsed < REFRESH_COOLDOWN_MS) {
+        return res.status(429).json({ error: "throttled", lastSyncAt: prev.lastSyncAt, retryAfterMs: REFRESH_COOLDOWN_MS - elapsed });
+      }
+    }
     const fresh = await fetchZohoReorder(zohoConfig());
     const { doc, summary } = mergeReorder(readReorder(), fresh);
     res.json({ ok: true, summary, data: writeReorder(doc) });

@@ -273,7 +273,7 @@ same list as Zoho's *Vendor → Order Now* screen.
 - **Quantity to be received** is worked out from open purchase orders
   (ordered − cancelled − the larger of received/billed; closed POs ignored),
   the same numbers Zoho's Order Now screen shows.
-- **Refresh from Zoho** button (throttled to once per 10 min hosted), plus
+- **Refresh from Zoho** button (greyed out for 30 min after each use, enforced by the server), plus
   `.github/workflows/zoho-reorder.yml` every Monday. `npm run zoho-reorder`
   does a dry run locally (`-- --apply` to write).
 - Refreshing only updates Zoho's numbers. It **never deletes a row** and never
