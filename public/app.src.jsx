@@ -3755,7 +3755,7 @@ function Discontinued({
 }
 
 // Zoho Inventory items at/below their reorder level — nothing to do with the
-// Shopify catalog. Numbers come from Zoho (Refresh button, or the weekly
+// Shopify catalog. Numbers come from Zoho (Refresh button, or the 8-hourly
 // workflow); "Expected by" and Notes are typed here and never overwritten by
 // a refresh. Rows are never deleted: once an item is back above its reorder
 // level it moves to "Restocked", notes intact. See lib/zohoReorder.js.
@@ -3773,8 +3773,10 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
     const t = setInterval(() => setTick((n) => n + 1), 30000);
     return () => clearInterval(t);
   }, []);
-  const cooldownLeft = doc.lastSyncAt
-    ? REORDER_COOLDOWN_MS - (Date.now() - new Date(doc.lastSyncAt).getTime())
+  // counts from the last button press only (lastManualSyncAt) — the scheduled
+  // refresh doesn't grey the button out
+  const cooldownLeft = doc.lastManualSyncAt
+    ? REORDER_COOLDOWN_MS - (Date.now() - new Date(doc.lastManualSyncAt).getTime())
     : 0;
   const coolingDown = cooldownLeft > 0;
   const toggleSort = (col) => {
@@ -3858,7 +3860,7 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
       const j = await r.json();
       if (r.status === 429) {
         flash(
-          `Refreshed ${timeAgo(j.lastSyncAt)} — try again in ${Math.ceil(j.retryAfterMs / 60000)} min`,
+          `Refresh was used recently — try again in ${fmtLeft(j.retryAfterMs)}`,
         );
       } else if (!j.ok) {
         flash(`Zoho refresh failed: ${j.detail || j.error}`);
@@ -3937,7 +3939,7 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
           disabled={refreshing || coolingDown}
           title={
             coolingDown
-              ? `Refreshed ${timeAgo(doc.lastSyncAt)} — available again in ${Math.ceil(cooldownLeft / 60000)} min (once every 30 min)`
+              ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 8h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.`
               : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept."
           }
           style={{
@@ -3949,7 +3951,7 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
           {refreshing
             ? "Refreshing…"
             : coolingDown
-              ? `Refreshed ${timeAgo(doc.lastSyncAt)} · again in ${Math.ceil(cooldownLeft / 60000)}m`
+              ? `Updated ${timeAgo(doc.lastSyncAt)} · refresh again in ${fmtLeft(cooldownLeft)}`
               : doc.lastSyncAt
                 ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}`
                 : "Refresh from Zoho"}
@@ -4081,7 +4083,7 @@ function Reorder({ doc, setDoc, stickyTop, flash }) {
       </div>
       <p style={{ ...note, marginTop: 10 }}>
         {shown.length} item{shown.length === 1 ? "" : "s"} · numbers from Zoho
-        Inventory (also refreshed automatically every Monday). "To be received"
+        Inventory (also refreshed automatically every 8 hours). "To be received"
         counts open purchase orders only. "Still short" = reorder level − stock
         on hand − to be received.
       </p>
@@ -4523,7 +4525,14 @@ const wlGrid = {
 };
 const numCell = { textAlign: "right", fontSize: 14 };
 // matches REFRESH_COOLDOWN_MS in lib/zohoReorder.js (the server enforces it)
-const REORDER_COOLDOWN_MS = 30 * 60 * 1000;
+const REORDER_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+// "45m" / "3h" / "3h 20m" for the cooldown countdown
+const fmtLeft = (ms) => {
+  const mins = Math.ceil(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+};
 // name · [vendor] · reorder · stock · to receive · expected · notes · short
 const reorderGrid = (showVendor) => ({
   display: "grid",
@@ -4547,4 +4556,69 @@ const prodGrid = {
   gap: 8,
 };
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+// The team's page (/inventory): just the Zoho table, none of the other tabs.
+// Same site login as the main app — it hides the rest, it doesn't lock it.
+function InventoryApp() {
+  const [doc, setDoc] = useState(null);
+  const [toast, setToast] = useState(null);
+  const flash = (m) => {
+    setToast(m);
+    setTimeout(() => setToast(null), 2600);
+  };
+  const headerRef = useRef(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    fetch("/api/reorder")
+      .then((r) => r.json())
+      .then((d) => setDoc(d && d.items ? d : { items: {}, lastSyncAt: null }))
+      .catch(() => setDoc({ items: {}, lastSyncAt: null }));
+  }, []);
+  useEffect(() => {
+    if (headerRef.current) setHeaderH(headerRef.current.getBoundingClientRect().height);
+  }, [doc]);
+
+  return (
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 60px" }}>
+      <div
+        ref={headerRef}
+        style={{ position: "sticky", top: 0, zIndex: 20, background: "var(--paper)", padding: "26px 0 14px" }}
+      >
+        <div style={{ fontSize: 11, letterSpacing: 3, textTransform: "uppercase", color: "var(--clay)", fontWeight: 700 }}>
+          Ware Innovations
+        </div>
+        <h1 className="serif" style={{ fontSize: 32, margin: "6px 0 0", fontWeight: 600, letterSpacing: -0.5 }}>
+          Zoho Inventory
+        </h1>
+      </div>
+      {!doc ? (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Loading…</div>
+      ) : (
+        <Reorder doc={doc} setDoc={setDoc} stickyTop={headerH} flash={flash} />
+      )}
+      {toast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 18,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 30,
+            background: "var(--ink)",
+            color: "var(--paper)",
+            padding: "10px 16px",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// inventory.html sets window.APP_VIEW = "inventory" before loading this file
+ReactDOM.createRoot(document.getElementById("root")).render(
+  window.APP_VIEW === "inventory" ? <InventoryApp /> : <App />,
+);

@@ -1,4 +1,4 @@
-# Weekly: refresh the Zoho reorder list (the app's "Reorder" tab).
+# Every 8 hours: refresh the Zoho reorder list (the app's "Reorder" tab).
 #
 # Safe to run unattended: it only refreshes Zoho's numbers (stock, reorder
 # level, quantity to be received). It never deletes rows and never touches the
@@ -17,7 +17,7 @@ name: Refresh Zoho reorder list
 
 on:
   schedule:
-    - cron: "30 2 * * 1" # Mondays 02:30 UTC (08:00 IST)
+    - cron: "0 */8 * * *" # every 8 hours
   workflow_dispatch: {}
 
 jobs:

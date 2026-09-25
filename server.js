@@ -180,6 +180,11 @@ function writeReorder(doc) {
   return doc;
 }
 
+// the team's Zoho-only page (hosted, the middleware limits the team login to it)
+app.get("/inventory", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "inventory.html"));
+});
+
 app.get("/api/reorder", (req, res) => {
   res.json(readReorder());
 });
@@ -187,14 +192,15 @@ app.get("/api/reorder", (req, res) => {
 app.post("/api/reorder", async (req, res) => {
   try {
     const prev = readReorder();
-    if (prev.lastSyncAt) {
-      const elapsed = Date.now() - new Date(prev.lastSyncAt).getTime();
+    if (prev.lastManualSyncAt) {
+      const elapsed = Date.now() - new Date(prev.lastManualSyncAt).getTime();
       if (elapsed < REFRESH_COOLDOWN_MS) {
-        return res.status(429).json({ error: "throttled", lastSyncAt: prev.lastSyncAt, retryAfterMs: REFRESH_COOLDOWN_MS - elapsed });
+        return res.status(429).json({ error: "throttled", lastManualSyncAt: prev.lastManualSyncAt, retryAfterMs: REFRESH_COOLDOWN_MS - elapsed });
       }
     }
     const fresh = await fetchZohoReorder(zohoConfig());
     const { doc, summary } = mergeReorder(readReorder(), fresh);
+    doc.lastManualSyncAt = doc.lastSyncAt;
     res.json({ ok: true, summary, data: writeReorder(doc) });
   } catch (e) {
     console.error("reorder sync error:", e);

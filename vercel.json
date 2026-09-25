@@ -2,5 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "buildCommand": null,
-  "outputDirectory": "public"
+  "outputDirectory": "public",
+  "rewrites": [{ "source": "/inventory", "destination": "/inventory.html" }]
 }

@@ -5,8 +5,9 @@
 //   POST                        → refresh numbers from Zoho (see lib/zohoReorder.js)
 //   PATCH {id, expectedDate?, notes?} → save one row's hand-entered fields
 //
-// Refresh is throttled to once per 30 min (Zoho caps API calls per day, and
-// this is reachable by anyone who can load the app).
+// The Refresh button is throttled to once per 8h (Zoho caps API calls per
+// day, and this is reachable by anyone who can load the app, team included).
+// The scheduled 8-hourly refresh doesn't count towards it.
 //
 // Env vars: the Upstash pair (same as api/data.js) plus
 //   ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_ORG_ID
@@ -50,16 +51,19 @@ export default async function handler(req, res) {
     if (req.method === "POST") {
       const cfg = zohoConfig();
       const prev = (await redis.get(REORDER_KEY)) || EMPTY_REORDER;
-      if (prev.lastSyncAt) {
-        const elapsed = Date.now() - new Date(prev.lastSyncAt).getTime();
+      // cooldown counts from the last button press only — the scheduled
+      // refresh (scripts/zoho-reorder.js) doesn't use it up
+      if (prev.lastManualSyncAt) {
+        const elapsed = Date.now() - new Date(prev.lastManualSyncAt).getTime();
         if (elapsed < THROTTLE_MS) {
-          return res.status(429).json({ error: "throttled", lastSyncAt: prev.lastSyncAt, retryAfterMs: THROTTLE_MS - elapsed });
+          return res.status(429).json({ error: "throttled", lastManualSyncAt: prev.lastManualSyncAt, retryAfterMs: THROTTLE_MS - elapsed });
         }
       }
       const fresh = await fetchZohoReorder(cfg);
       // re-read right before writing so notes saved during the Zoho fetch survive
       const base = (await redis.get(REORDER_KEY)) || EMPTY_REORDER;
       const { doc, summary } = mergeReorder(base, fresh);
+      doc.lastManualSyncAt = doc.lastSyncAt;
       await redis.set(REORDER_KEY, doc);
       return res.status(200).json({ ok: true, summary, data: doc });
     }

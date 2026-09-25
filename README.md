@@ -273,14 +273,19 @@ same list as Zoho's *Vendor → Order Now* screen.
 - **Quantity to be received** is worked out from open purchase orders
   (ordered − cancelled − the larger of received/billed; closed POs ignored),
   the same numbers Zoho's Order Now screen shows.
-- **Refresh from Zoho** button (greyed out for 30 min after each use, enforced by the server), plus
-  `.github/workflows/zoho-reorder.yml` every Monday. `npm run zoho-reorder`
+- **Refresh from Zoho** button (usable once every 8h, counted from the last press; enforced by the server), plus
+  `.github/workflows/zoho-reorder.yml` every 8 hours. `npm run zoho-reorder`
   does a dry run locally (`-- --apply` to write).
 - Refreshing only updates Zoho's numbers. It **never deletes a row** and never
   touches your dates/notes — items back above their reorder level move to the
   **Restocked** filter, notes intact.
 - Stored under its own Redis key `bundle-manager:reorder` (locally
   `data/reorder.json`), never mixed into the catalog document.
+
+**Sharing it with the team:** `/inventory` is a page with only this table —
+no other tabs, same dates/notes/Refresh as the main tab. It's behind
+the same site login as the main app, so it hides the rest of the app but
+doesn't lock anyone out of it.
 
 Needs, in `.env`, the Vercel project's Environment Variables, and the GitHub
 repository secrets: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`,
