@@ -799,7 +799,8 @@ function App() {
     doc: reorder,
     setDoc: setReorder,
     stickyTop: headerH,
-    flash: flash
+    flash: flash,
+    products: products
   }), tab === "trash" && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
@@ -3204,7 +3205,8 @@ function Reorder({
   doc,
   setDoc,
   stickyTop,
-  flash
+  flash,
+  products
 }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
@@ -3265,10 +3267,23 @@ function Reorder({
     return list;
   }, [rows, q, vendor, view, sortBy, sortDir]);
 
-  // vendor picked no longer has rows in this view — fall back to all
+  // vendor picked no longer has rows in this view — fall back to all (not for
+  // the Ceramitec view, which isn't Zoho rows — keep the vendor for coming back)
   useEffect(() => {
+    if (view === "ceramitec") return;
     if (vendor !== "all" && !vendors.some(([v]) => v === vendor)) setVendor("all");
   }, [vendors]);
+
+  // Ceramitec ships some sets pre-packed; those are single Shopify products
+  // with hand-entered stock, so their stock comes from the Shopify sync (the
+  // product's `stock`), not from Zoho
+  const ceramitec = useMemo(() => CERAMITEC_BUNDLE_SKUS.map(sku => ({
+    sku,
+    p: (products || []).find(x => normSku(x.sku) === normSku(sku))
+  })).filter(({
+    sku,
+    p
+  }) => matchText(q, `${p ? p.name : ""} ${sku}`)), [products, q]);
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -3320,6 +3335,44 @@ function Reorder({
         items: {
           ...d.items,
           [id]: j.row
+        }
+      }));
+    } catch {
+      flash("Couldn't save — check your connection and try again");
+    }
+  };
+
+  // same as saveRow, for a Ceramitec bundle's hand-entered fields (by SKU)
+  const saveManual = async (sku, patch) => {
+    const key = sku.toUpperCase();
+    setDoc(d => ({
+      ...d,
+      manual: {
+        ...(d.manual || {}),
+        [key]: {
+          ...(d.manual || {})[key],
+          ...patch
+        }
+      }
+    }));
+    try {
+      const r = await fetch("/api/reorder", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sku,
+          ...patch
+        })
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      setDoc(d => ({
+        ...d,
+        manual: {
+          ...(d.manual || {}),
+          [key]: j.row
         }
       }));
     } catch {
@@ -3379,7 +3432,7 @@ function Reorder({
       marginTop: 10,
       flexWrap: "wrap"
     }
-  }, [["below", `Below reorder level (${counts.below})`], ["short", `Needs ordering (${counts.short})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["below", `Below reorder level (${counts.below})`], ["short", `Needs ordering (${counts.short})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setView(k),
     style: {
@@ -3387,6 +3440,11 @@ function Reorder({
       textTransform: "none"
     }
   }, label))));
+  if (view === "ceramitec") return /*#__PURE__*/React.createElement("div", null, header, /*#__PURE__*/React.createElement(CeramitecBundles, {
+    rows: ceramitec,
+    manual: doc.manual,
+    onSave: saveManual
+  }));
   if (!doc.lastSyncAt) return /*#__PURE__*/React.createElement("div", null, header, /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
@@ -3561,27 +3619,195 @@ function ExpectedDateCell({
     }
   }, "+ Add date"));
 }
+
+// Ceramitec's pre-packed sets — single Shopify products, not Zoho items.
+// Stock on hand is Shopify's (via the Shopify sync); to be received, expected
+// date and notes are typed in here (doc.manual, keyed by SKU).
+function CeramitecBundles({
+  rows,
+  manual,
+  onSave
+}) {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 820
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...ceramitecGrid,
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--line)",
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, "Name"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, "Stock on hand"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, "To be received"), /*#__PURE__*/React.createElement("div", null, "Expected by"), /*#__PURE__*/React.createElement("div", null, "Notes")), !rows.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "30px 16px",
+      textAlign: "center",
+      color: "var(--muted)",
+      fontSize: 14
+    }
+  }, "No items match."), rows.map(({
+    sku,
+    p
+  }) => {
+    const m = (manual || {})[sku.toUpperCase()] || {};
+    return /*#__PURE__*/React.createElement("div", {
+      key: sku,
+      style: {
+        ...ceramitecGrid,
+        padding: "10px 16px",
+        borderBottom: "1px solid var(--line)",
+        alignItems: "center",
+        fontSize: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 600,
+        color: p ? "var(--ink)" : "var(--muted)"
+      }
+    }, p ? p.name : "Not in the catalog yet — run Sync with Shopify"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--muted)"
+      }
+    }, sku)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...midCell,
+        fontWeight: 600,
+        color: !p || !p.stockTracked ? "var(--muted)" : (p.stock || 0) <= 0 ? "var(--clay)" : p.stock < 10 ? "var(--amber)" : "var(--sage)"
+      }
+    }, !p ? "—" : p.stockTracked ? p.stock || 0 : "not tracked"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "center"
+      }
+    }, /*#__PURE__*/React.createElement(QtyCell, {
+      value: m.toReceive,
+      onSave: v => onSave(sku, {
+        toReceive: v
+      })
+    })), /*#__PURE__*/React.createElement(ExpectedDateCell, {
+      value: m.expectedDate || "",
+      onChange: v => onSave(sku, {
+        expectedDate: v
+      })
+    }), /*#__PURE__*/React.createElement(NotesCell, {
+      value: m.notes,
+      onSave: v => onSave(sku, {
+        notes: v
+      })
+    }));
+  }))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      ...note,
+      marginTop: 10
+    }
+  }, "Pre-packed Ceramitec sets, sold as single products on Shopify. Stock on hand is what's entered on Shopify (updated on every Shopify sync); to be received, dates and notes are filled in here."));
+}
+
+// hand-typed quantity (e.g. Ceramitec "to be received") — reads as a number,
+// box on hover/focus, saves on blur or Enter; empty clears it
+function QtyCell({
+  value,
+  onSave
+}) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  useEffect(() => setDraft(value == null ? "" : String(value)), [value]);
+  const commit = () => {
+    const clean = draft.trim();
+    if (clean === (value == null ? "" : String(value))) return;
+    onSave(clean === "" ? "" : Math.max(0, Math.floor(Number(clean)) || 0));
+  };
+  return /*#__PURE__*/React.createElement("input", {
+    className: "cellEdit",
+    inputMode: "numeric",
+    value: draft,
+    onChange: e => setDraft(e.target.value.replace(/[^0-9]/g, "")),
+    onBlur: commit,
+    onKeyDown: e => e.key === "Enter" && e.target.blur(),
+    placeholder: "Add qty",
+    style: {
+      width: 90,
+      textAlign: "center",
+      fontSize: 14,
+      padding: "5px 8px",
+      borderRadius: 7,
+      fontFamily: "inherit",
+      color: "var(--ink)"
+    }
+  });
+}
+
+// in-table notes: reads as text, saves on blur (or Enter), not per keystroke;
+// Shift+Enter = new line. Grows to fit so nothing gets cut off.
+function NotesCell({
+  value,
+  onSave
+}) {
+  const [draft, setDraft] = useState(value || "");
+  useEffect(() => setDraft(value || ""), [value]);
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+  return /*#__PURE__*/React.createElement("textarea", {
+    ref: ref,
+    className: "cellEdit",
+    rows: 1,
+    value: draft,
+    onChange: e => setDraft(e.target.value),
+    onBlur: () => draft !== (value || "") && onSave(draft),
+    onKeyDown: e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.target.blur();
+      }
+    },
+    placeholder: "Add a note…",
+    style: {
+      fontSize: 13,
+      lineHeight: 1.4,
+      padding: "5px 8px",
+      width: "100%",
+      borderRadius: 7,
+      resize: "none",
+      overflow: "hidden",
+      fontFamily: "inherit",
+      color: "var(--ink)"
+    }
+  });
+}
 function ReorderRow({
   r,
   onSave,
   showVendor
 }) {
-  // notes save on blur (or Enter), not per keystroke; Shift+Enter = new line
-  const [draft, setDraft] = useState(r.notes || "");
-  useEffect(() => setDraft(r.notes || ""), [r.notes]);
-  const commitNotes = () => {
-    if (draft !== (r.notes || "")) onSave(r.id, {
-      notes: draft
-    });
-  };
-  // grow the notes box to fit whatever's written, so nothing gets cut off
-  const notesRef = useRef(null);
-  useEffect(() => {
-    const el = notesRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [draft]);
   // almost everything is in pcs, so the unit is only shown when it isn't
   const u = (r.unit || "").toLowerCase();
   const unit = u && u !== "pcs" ? ` ${u}` : "";
@@ -3631,31 +3857,11 @@ function ReorderRow({
     onChange: v => onSave(r.id, {
       expectedDate: v
     })
-  }), /*#__PURE__*/React.createElement("textarea", {
-    ref: notesRef,
-    className: "cellEdit",
-    rows: 1,
-    value: draft,
-    onChange: e => setDraft(e.target.value),
-    onBlur: commitNotes,
-    onKeyDown: e => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        e.target.blur();
-      }
-    },
-    placeholder: "Add a note…",
-    style: {
-      fontSize: 13,
-      lineHeight: 1.4,
-      padding: "5px 8px",
-      width: "100%",
-      borderRadius: 7,
-      resize: "none",
-      overflow: "hidden",
-      fontFamily: "inherit",
-      color: "var(--ink)"
-    }
+  }), /*#__PURE__*/React.createElement(NotesCell, {
+    value: r.notes,
+    onSave: v => onSave(r.id, {
+      notes: v
+    })
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
@@ -3877,6 +4083,28 @@ const midCell = {
   textAlign: "center",
   fontSize: 14
 };
+// name · stock on hand · to be received · expected · notes
+const ceramitecGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(260px,2fr) 110px 120px 130px minmax(200px,1.5fr)",
+  gap: 12
+};
+// Ceramitec sets that arrive pre-packed — shown under "Ceramitec bundles" on
+// the Zoho Inventory page. Add/remove SKUs here.
+const CERAMITEC_BUNDLE_SKUS = ["CER04TS063",
+// Morya Table Setting (4 Pieces)
+"CER13TS284",
+// Rangoli Table Setting Pink (13 Pieces)
+"CER083TS104",
+// Rangoli Table Settings Lilac (13 pieces)
+"CER04TS068",
+// Raya Table Setting (4 Pieces)
+"CER05TS047",
+// Heart Beat Table Setting Pink (5 Pieces)
+"CER082TS105",
+// Bites and Delights Lime Green
+"CER080TS102" // The Sushi Dimsum set Pink + Aqua
+];
 // a plain-text button used for in-cell actions ("+ Add date", a set date)
 const cellLink = {
   background: "none",
@@ -3904,6 +4132,8 @@ function InventoryApp() {
   };
   const headerRef = useRef(null);
   const [headerH, setHeaderH] = useState(0);
+  // catalog products — only for the Ceramitec bundles' Shopify stock
+  const [products, setProducts] = useState([]);
   useEffect(() => {
     fetch("/api/reorder").then(r => r.json()).then(d => setDoc(d && d.items ? d : {
       items: {},
@@ -3912,6 +4142,7 @@ function InventoryApp() {
       items: {},
       lastSyncAt: null
     }));
+    fetch("/api/data").then(r => r.json()).then(d => setProducts(d && d.products || [])).catch(() => {});
   }, []);
   useEffect(() => {
     if (headerRef.current) setHeaderH(headerRef.current.getBoundingClientRect().height);
@@ -3957,7 +4188,8 @@ function InventoryApp() {
     doc: doc,
     setDoc: setDoc,
     stickyTop: headerH,
-    flash: flash
+    flash: flash,
+    products: products
   }), toast && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",

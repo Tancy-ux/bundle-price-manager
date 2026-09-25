@@ -20,6 +20,7 @@ import {
   fetchZohoReorder,
   mergeReorder,
   patchReorderRow,
+  patchManualRow,
   REFRESH_COOLDOWN_MS,
 } from "../lib/zohoReorder.js";
 
@@ -69,7 +70,14 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PATCH") {
-      const { id, expectedDate, notes } = req.body || {};
+      const { id, sku, expectedDate, notes, toReceive } = req.body || {};
+      // {sku, ...} → a Ceramitec bundle's hand-entered row (not a Zoho item)
+      if (sku) {
+        const doc = patchManualRow((await redis.get(REORDER_KEY)) || EMPTY_REORDER, sku, { expectedDate, notes, toReceive });
+        if (!doc) return res.status(400).json({ error: "bad sku" });
+        await redis.set(REORDER_KEY, doc);
+        return res.status(200).json({ ok: true, row: doc.manual[String(sku).trim().toUpperCase()] });
+      }
       if (!id) return res.status(400).json({ error: "id is required" });
       const doc = patchReorderRow((await redis.get(REORDER_KEY)) || EMPTY_REORDER, id, { expectedDate, notes });
       if (!doc) return res.status(404).json({ error: "row not found" });

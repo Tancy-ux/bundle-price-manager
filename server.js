@@ -11,7 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { fetchShopifyCatalog, computeSync, pushVariantPrice, pushHistory } from "./lib/shopifySync.js";
 import { mergeUpserts, mergeTrash, mergeSet } from "./lib/mergeData.js";
-import { EMPTY_REORDER, REFRESH_COOLDOWN_MS, zohoConfig, fetchZohoReorder, mergeReorder, patchReorderRow } from "./lib/zohoReorder.js";
+import { EMPTY_REORDER, REFRESH_COOLDOWN_MS, zohoConfig, fetchZohoReorder, mergeReorder, patchReorderRow, patchManualRow } from "./lib/zohoReorder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
@@ -209,7 +209,14 @@ app.post("/api/reorder", async (req, res) => {
 });
 
 app.patch("/api/reorder", (req, res) => {
-  const { id, expectedDate, notes } = req.body || {};
+  const { id, sku, expectedDate, notes, toReceive } = req.body || {};
+  // {sku, ...} → a Ceramitec bundle's hand-entered row (not a Zoho item)
+  if (sku) {
+    const doc = patchManualRow(readReorder(), sku, { expectedDate, notes, toReceive });
+    if (!doc) return res.status(400).json({ error: "bad sku" });
+    writeReorder(doc);
+    return res.json({ ok: true, row: doc.manual[String(sku).trim().toUpperCase()] });
+  }
   if (!id) return res.status(400).json({ error: "id is required" });
   const doc = patchReorderRow(readReorder(), id, { expectedDate, notes });
   if (!doc) return res.status(404).json({ error: "row not found" });
