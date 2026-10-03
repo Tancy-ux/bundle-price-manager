@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  @media print {
+    body { background: #fff !important; color: #000 !important; }
+    .wrap { max-width: none; padding: 0 0 1rem; }
+    section, .fix, .rung { break-inside: avoid; }
+    pre, .tablewrap, figure { break-inside: avoid; }
+  }
+</style>
+<title>Bundle Manager Guide</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+  :root {
+    --ground:      #F7F7F4;
+    --surface:     #FFFFFF;
+    --surface-alt: #EFEFEA;
+    --ink:         #1A1D19;
+    --muted:       #6B7167;
+    --line:        #DCDCD4;
+    --accent:      #2F6F4E;
+    --accent-soft: #E3EDE6;
+    --bad:         #A33A2A;
+    --bad-soft:    #F6E5E1;
+    --warn:        #8A6416;
+    --warn-soft:   #F5ECD9;
+
+    --f-sans:  "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    --f-serif: "IBM Plex Serif", Georgia, serif;
+    --f-mono:  "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+    --col: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #141613;
+      --surface:     #1C1F1B;
+      --surface-alt: #23261F;
+      --ink:         #E8EAE4;
+      --muted:       #9AA095;
+      --line:        #33372E;
+      --accent:      #6FBF8F;
+      --accent-soft: #1E2E24;
+      --bad:         #E39383;
+      --bad-soft:    #2E1F1B;
+      --warn:        #D9AC57;
+      --warn-soft:   #2B2415;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #141613;
+    --surface:     #1C1F1B;
+    --surface-alt: #23261F;
+    --ink:         #E8EAE4;
+    --muted:       #9AA095;
+    --line:        #33372E;
+    --accent:      #6FBF8F;
+    --accent-soft: #1E2E24;
+    --bad:         #E39383;
+    --bad-soft:    #2E1F1B;
+    --warn:        #D9AC57;
+    --warn-soft:   #2B2415;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-serif);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 78ch;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.5rem;
+  }
+
+  .masthead { display: flex; flex-direction: column; gap: 1rem; }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    font-family: var(--f-sans);
+    font-weight: 700;
+    font-size: clamp(2rem, 5vw, 2.9rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .standfirst {
+    font-size: 1.1rem;
+    color: var(--muted);
+    max-width: var(--col);
+    margin: 0;
+  }
+  .rule { height: 2px; width: 3rem; background: var(--accent); border-radius: 2px; }
+
+  nav.toc {
+    font-family: var(--f-sans);
+    font-size: 0.88rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.1rem;
+  }
+  nav.toc a { color: var(--muted); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+  section { display: flex; flex-direction: column; gap: 1.1rem; scroll-margin-top: 1rem; }
+  h2 {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: 1.45rem;
+    letter-spacing: -0.01em;
+    margin: 0;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--line);
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: 1.02rem;
+    margin: 0;
+  }
+  p { margin: 0; max-width: var(--col); }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.86em;
+    background: var(--surface-alt);
+    padding: 0.1em 0.36em;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+  strong { font-weight: 600; }
+  em.term { font-style: italic; color: var(--muted); }
+
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .hop {
+    display: grid;
+    grid-template-columns: 9.5rem 1fr;
+    gap: 1rem;
+    padding: 0.85rem 1.1rem;
+    align-items: baseline;
+  }
+  .hop + .hop { border-top: 1px solid var(--line); }
+  .hop-where {
+    font-family: var(--f-mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .hop-what { font-size: 0.95rem; }
+  .hop-what span.file {
+    font-family: var(--f-mono);
+    font-size: 0.83em;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.15rem;
+  }
+
+  pre {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: var(--ink);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  figure { margin: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+  figcaption {
+    font-family: var(--f-sans);
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  /* system diagram */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.75rem;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; width: 100%; min-width: 560px; height: auto; }
+  .diagram .box  { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+  .diagram .ext  { fill: var(--surface-alt); stroke: var(--line); stroke-width: 1.2; }
+  .diagram .grp  { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .diagram .t    { fill: var(--ink); font-family: var(--f-sans); font-size: 13px; font-weight: 600; }
+  .diagram .s    { fill: var(--muted); font-family: var(--f-mono); font-size: 10.5px; }
+  .diagram .lbl  { fill: var(--accent); font-family: var(--f-mono); font-size: 10px; }
+  .diagram .arr  { stroke: var(--accent); stroke-width: 1.4; fill: none; }
+  .diagram .arrhead { fill: var(--accent); }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.6rem 0.9rem; vertical-align: top; }
+  th {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td { border-top: 1px solid var(--line); font-family: var(--f-sans); }
+  tbody tr:first-child td { border-top: none; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.9rem 1.1rem;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.95rem;
+  }
+  .note.caution { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note.danger  { border-left-color: var(--bad);  background: var(--bad-soft); }
+  .note p + p { margin-top: 0.5rem; }
+  .note-label {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+
+  .fixes { display: flex; flex-direction: column; gap: 1.5rem; }
+  .fix { display: flex; flex-direction: column; gap: 0.55rem; }
+  .fix-head { display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.45rem;
+    border-radius: 3px;
+    background: var(--surface-alt);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.warn { color: var(--warn); background: var(--warn-soft); }
+  .chip.bad { color: var(--bad); background: var(--bad-soft); }
+  .chip.new { color: var(--accent); background: var(--accent-soft); }
+
+  ul.plain { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.35rem; max-width: var(--col); }
+  ul.plain li { padding-left: 0.2rem; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-family: var(--f-sans);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 34rem) {
+    .wrap { padding: 2.5rem 1rem 4rem; }
+    .hop { grid-template-columns: 1fr; gap: 0.25rem; }
+    body { font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Reference · bundle-price-manager</div>
+    <h1>Bundle Manager × Shopify × Zoho</h1>
+    <div class="rule"></div>
+    <p class="standfirst">How the whole app fits together and what each part does: the system design, every
+      tab, how Shopify and Zoho data gets in, how deletions are remembered so they don't silently come back,
+      and where stock, out-of-stock and reorder visibility come from.</p>
+    <nav class="toc" aria-label="Contents">
+      <a href="#design">System design</a>
+      <a href="#tabs">The tabs</a>
+      <a href="#model">Data model</a>
+      <a href="#sync">Shopify sync</a>
+      <a href="#deletions">Deletions</a>
+      <a href="#stock">Out of stock</a>
+      <a href="#zoho">Zoho Inventory</a>
+      <a href="#discontinued">Discontinued</a>
+      <a href="#history">What it took</a>
+      <a href="#setup">Setup</a>
+    </nav>
+  </header>
+
+  <!-- ───────────────────────────── SYSTEM DESIGN ───────────────────────────── -->
+  <section id="design">
+    <h2>System design</h2>
+    <p>One single-page React app, two interchangeable back ends that serve the same <code>/api</code>
+      routes, two storage documents, and two outside systems it reads from. Shopify is the only one it ever
+      writes to, and only through the "push price" button.</p>
+
+    <figure>
+      <div class="diagram">
+        <svg viewBox="0 0 760 470" role="img" aria-labelledby="dg-title dg-desc">
+          <title id="dg-title">Bundle Manager system diagram</title>
+          <desc id="dg-desc">The browser loads the app and calls the /api routes, served either by Vercel
+            functions backed by Upstash Redis or by the local server.js backed by files on disk. Both read
+            Shopify and Zoho. GitHub Actions refresh stock and the Zoho list on a schedule, writing to Redis.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="arrhead" d="M0,0 L10,5 L0,10 z"/>
+            </marker>
+          </defs>
+
+          <!-- browser -->
+          <rect class="box" x="20" y="16" width="450" height="96" rx="7"/>
+          <text class="t" x="34" y="38">Browser — public/app.js (React 18)</text>
+          <text class="s" x="34" y="58">index.html     full app, 8 tabs</text>
+          <text class="s" x="34" y="74">/inventory     Zoho Inventory table only</text>
+          <text class="s" x="34" y="90">compiled from public/app.src.jsx</text>
+          <text class="s" x="34" y="104">autosaves diffs · downloads .docx</text>
+
+          <!-- CDN -->
+          <rect class="ext" x="510" y="16" width="230" height="96" rx="7"/>
+          <text class="t" x="524" y="38">unpkg CDN</text>
+          <text class="s" x="524" y="58">react, react-dom (page load)</text>
+          <text class="s" x="524" y="74">docx@9.8.1 (on first download)</text>
+          <path class="arr" d="M470,64 H508" marker-end="url(#ah)"/>
+
+          <!-- API group -->
+          <rect class="grp" x="10" y="146" width="470" height="168" rx="9"/>
+          <text class="lbl" x="22" y="162">same /api routes · two hosts</text>
+          <path class="arr" d="M245,112 V144" marker-end="url(#ah)"/>
+          <text class="lbl" x="252" y="134">fetch /api/*</text>
+
+          <rect class="box" x="22" y="172" width="150" height="128" rx="7"/>
+          <text class="t" x="34" y="194">Local</text>
+          <text class="s" x="34" y="214">npm start</text>
+          <text class="s" x="34" y="230">server.js</text>
+          <text class="s" x="34" y="246">(Express)</text>
+          <text class="s" x="34" y="262">reads .env</text>
+
+          <rect class="box" x="186" y="172" width="282" height="128" rx="7"/>
+          <text class="t" x="198" y="194">Hosted — Vercel</text>
+          <text class="s" x="198" y="214">middleware.js   site login (Basic Auth)</text>
+          <text class="s" x="198" y="230">api/data.js     GET · PUT diffs</text>
+          <text class="s" x="198" y="246">api/sync.js     Shopify sync (4h)</text>
+          <text class="s" x="198" y="262">api/push-price  one variant price</text>
+          <text class="s" x="198" y="278">api/reorder.js  Zoho list (8h)</text>
+          <text class="s" x="198" y="294">lib/  shopifySync · zohoReorder · mergeData</text>
+
+          <!-- external APIs -->
+          <rect class="ext" x="510" y="160" width="230" height="64" rx="7"/>
+          <text class="t" x="524" y="182">Shopify Admin API</text>
+          <text class="s" x="524" y="200">REST · products + inventory</text>
+          <text class="s" x="524" y="215">writes: variant price only</text>
+
+          <rect class="ext" x="510" y="244" width="230" height="64" rx="7"/>
+          <text class="t" x="524" y="266">Zoho Inventory API</text>
+          <text class="s" x="524" y="284">.in region · read-only</text>
+          <text class="s" x="524" y="299">items · purchase orders</text>
+
+          <path class="arr" d="M480,192 H508" marker-end="url(#ah)"/>
+          <path class="arr" d="M480,276 H508" marker-end="url(#ah)"/>
+
+          <!-- storage -->
+          <rect class="box" x="22" y="356" width="150" height="96" rx="7"/>
+          <text class="t" x="34" y="378">Local disk</text>
+          <text class="s" x="34" y="398">data/data.json</text>
+          <text class="s" x="34" y="414">data/reorder.json</text>
+          <text class="s" x="34" y="430">data/backups/</text>
+          <path class="arr" d="M97,300 V354" marker-end="url(#ah)"/>
+
+          <rect class="box" x="186" y="356" width="282" height="96" rx="7"/>
+          <text class="t" x="198" y="378">Upstash Redis</text>
+          <text class="s" x="198" y="398">bundle-manager:data      catalog doc</text>
+          <text class="s" x="198" y="414">bundle-manager:backups   last 20</text>
+          <text class="s" x="198" y="430">bundle-manager:reorder   Zoho doc</text>
+          <path class="arr" d="M327,300 V354" marker-end="url(#ah)"/>
+
+          <!-- GitHub Actions -->
+          <rect class="ext" x="510" y="356" width="230" height="96" rx="7"/>
+          <text class="t" x="524" y="378">GitHub Actions (cron)</text>
+          <text class="s" x="524" y="398">fetch-stock     every 4h</text>
+          <text class="s" x="524" y="414">zoho-reorder    every 8h</text>
+          <text class="s" x="524" y="430">sync-store      weekly, dry run</text>
+          <path class="arr" d="M508,404 H470" marker-end="url(#ah)"/>
+          <path class="arr" d="M740,370 H752 V192 H742" marker-end="url(#ah)"/>
+          <path class="arr" d="M752,276 H742" marker-end="url(#ah)"/>
+        </svg>
+      </div>
+      <figcaption>Arrows point the way requests go. The local server and Vercel are alternatives — the
+        same app code talks to whichever one served it.</figcaption>
+    </figure>
+
+    <h3>The moving parts</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Part</th><th>Where</th><th>Job</th></tr></thead>
+        <tbody>
+          <tr><td>Front end</td><td class="mono">public/app.src.jsx → app.js</td><td>The whole UI, one file of
+            React components. There's no build script: <code>app.js</code> is the Babel
+            (<code>preset-react</code>) output of <code>app.src.jsx</code>, committed alongside it, and
+            <code>index.html</code> loads it with React from unpkg. Edit the <code>.jsx</code>, recompile,
+            commit both.</td></tr>
+          <tr><td>Team page</td><td class="mono">public/inventory.html</td><td>Same <code>app.js</code>, but sets
+            <code>APP_VIEW = "inventory"</code> so only the Zoho Inventory table renders. Served at
+            <code>/inventory</code>.</td></tr>
+          <tr><td>Hosted API</td><td class="mono">api/*.js</td><td>Vercel serverless functions, one per route.
+            Storage is Upstash Redis.</td></tr>
+          <tr><td>Local API</td><td class="mono">server.js</td><td>Express server with the same routes, storing
+            JSON files in <code>data/</code>. Loads <code>.env</code> itself.</td></tr>
+          <tr><td>Shared logic</td><td class="mono">lib/</td><td><code>shopifySync.js</code> (fetch catalog,
+            compute sync, push price), <code>zohoReorder.js</code> (Zoho fetch + merge),
+            <code>mergeData.js</code> (diff-based saves). Used by both hosts and the scripts, so they can't
+            drift apart.</td></tr>
+          <tr><td>Scripts</td><td class="mono">scripts/</td><td>Command-line versions of each sync, dry-run by
+            default (<code>--apply</code> to write), plus <code>seed</code> and <code>pull</code>. They
+            read/write live Redis.</td></tr>
+          <tr><td>Schedules</td><td class="mono">.github/workflows/</td><td>Run the scripts on a timer.</td></tr>
+          <tr><td>Login</td><td class="mono">middleware.js</td><td>HTTP Basic Auth over the whole hosted site
+            once <code>BASIC_AUTH_USER</code>/<code>PASS</code> are set.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>API routes</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="mono">Route</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">GET /api/data</td><td>The full catalog document.</td></tr>
+          <tr><td class="mono">PUT /api/data</td><td>Autosave. Body is per-array diffs (upserts/deletes by id);
+            the server merges onto what's stored now and returns the merged doc.</td></tr>
+          <tr><td class="mono">POST /api/sync</td><td>One-click Shopify sync. 429 if run in the last 4h.</td></tr>
+          <tr><td class="mono">POST /api/push-price</td><td>Sets one linked Shopify variant's price.</td></tr>
+          <tr><td class="mono">GET /api/reorder</td><td>The Zoho reorder document.</td></tr>
+          <tr><td class="mono">POST /api/reorder</td><td>Refresh from Zoho. 429 if the button was pressed in the
+            last 8h.</td></tr>
+          <tr><td class="mono">PATCH /api/reorder</td><td>Save one row's hand-typed fields: <code>{id, expectedDate,
+            notes}</code> for a Zoho row, or <code>{sku, toReceive, expectedDate, notes}</code> for a Ceramitec
+            bundle.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Key flows</h3>
+    <div class="pipeline">
+      <div class="hop">
+        <div class="hop-where">Edit &amp; autosave</div>
+        <div class="hop-what">Any change in the UI → the client diffs against its last confirmed save → sends
+          only the changed items → server re-reads, merges, writes, keeps a backup → returns the merged doc,
+          which also brings in anyone else's edits.
+          <span class="file">app.src.jsx diffById · lib/mergeData.js</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">Stock refresh</div>
+        <div class="hop-what">Every 4h a GitHub Action pulls Shopify inventory and writes <code>stock</code>
+          onto matching products in Redis. The app picks it up on next load.
+          <span class="file">fetch-stock.yml · scripts/fetch-stock.js</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">Sync button</div>
+        <div class="hop-what">One Shopify fetch → new products, new bundle shells, stock → one write. 4h
+          cooldown, server-enforced.
+          <span class="file">api/sync.js · server.js · lib/shopifySync.js</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">Push price</div>
+        <div class="hop-what">Confirm dialog → <code>PUT</code> to Shopify for that one variant id, price field
+          only → re-read the doc fresh and save the new price with a history entry.
+          <span class="file">api/push-price.js · pushVariantPrice</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">Zoho refresh</div>
+        <div class="hop-what">Button (8h cooldown) or 8-hourly Action → fetch items + open POs → merge
+          numbers into the reorder doc, never touching typed dates/notes.
+          <span class="file">api/reorder.js · lib/zohoReorder.js · zoho-reorder.yml</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">OOS download</div>
+        <div class="hop-what">Sync (if the 4h cooldown allows) or reload the stored doc → build the Word file
+          in the browser with <code>docx</code> → download. Nothing is sent anywhere.
+          <span class="file">app.src.jsx exportOOS · downloadOOSDocx</span></div>
+      </div>
+    </div>
+
+    <h3>Timers and limits</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>What</th><th>How often</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Shopify stock (Action)</td><td class="mono">every 4h</td><td>Unattended, <code>--apply</code>.
+            Only touches stock fields.</td></tr>
+          <tr><td>"Sync with Shopify" button</td><td class="mono">once / 4h</td><td>Shared across everyone, via
+            <code>lastSyncAt</code>.</td></tr>
+          <tr><td>New-product check (Action)</td><td class="mono">Mondays 04:00 UTC</td><td>Dry run; apply by
+            running it by hand.</td></tr>
+          <tr><td>Zoho list (Action)</td><td class="mono">every 8h</td><td>Doesn't use up the button.</td></tr>
+          <tr><td>Zoho "Refresh" button</td><td class="mono">once / 8h</td><td>Counted from the last
+            <em>press</em> (<code>lastManualSyncAt</code>). Zoho caps API calls per day.</td></tr>
+          <tr><td>Backups</td><td class="mono">every save</td><td>Rolling last 20 (Redis list or
+            <code>data/backups/</code>).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note caution">
+      <span class="note-label">Single points to know about</span>
+      <p>The app needs unpkg to load React (and <code>docx</code> for downloads) — a network that blocks it
+        shows a "Couldn't load the app" message. All catalog data is one Redis value, written whole on each
+        save (merged server-side), which is fine at this size (~740 products) but is the thing to revisit if
+        the catalog grows by an order of magnitude.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── TABS ───────────────────────────── -->
+  <section id="tabs">
+    <h2>The tabs</h2>
+    <p>In nav order. The app opens on <strong>Zoho Inventory</strong>; Bundles and Products open on their
+      out-of-stock filter.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Tab</th><th>What it's for</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Zoho Inventory</strong></td><td>Zoho items below their reorder level, with to-be-received
+            from open POs, typed "expected by" dates and notes, plus a Ceramitec bundles view.
+            <a href="#zoho">More below.</a></td></tr>
+          <tr><td><strong>Bundles</strong></td><td>Build and edit bundles (components + qty). Filters: not built
+            yet, built, out of stock, duplicate names, and the marble-vase / Lush / Diverge silo. Sort by name,
+            price or stock.</td></tr>
+          <tr><td><strong>Products</strong></td><td>The catalog: price, stock, which bundles use each product.
+            Filters: used, unused, out of stock, Marble Atelier. Push a price to Shopify from here.</td></tr>
+          <tr><td><strong>Needs updating</strong></td><td>Bundles whose stored price no longer matches the sum of
+            their components — old price, correct price, difference. Copy all, mark updated.</td></tr>
+          <tr><td><strong>Discontinued</strong></td><td>Products and bundles marked no-longer-sold, kept intact
+            and restorable. <a href="#discontinued">More below.</a></td></tr>
+          <tr><td><strong>Out of stock</strong></td><td>Blocked bundles and zero-stock products, split
+            Ceramic / Marble, with a Word download. <a href="#stock">More below.</a></td></tr>
+          <tr><td><strong>In bundles</strong></td><td>Search a product, see every bundle that uses it.</td></tr>
+          <tr><td><strong>Trash</strong></td><td>Deleted items, restorable until removed for good.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── DATA MODEL ───────────────────────────── -->
+  <section id="model">
+    <h2>The data model</h2>
+    <p>Two documents, kept apart on purpose so a Zoho refresh can never touch the Shopify catalog and the
+      other way round.</p>
+    <h3>Catalog — <code>data/data.json</code> or Redis <code>bundle-manager:data</code></h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Field</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">products[]</td><td>Flat catalog. Each has <code>id, sku, name, price, active, history</code>,
+            plus <code>stock, stockTracked, stockUpdatedAt</code> once a stock sync has touched it, and
+            <code>shopifyVariantId</code> once a sync has linked it. <code>active: false</code> = discontinued.</td></tr>
+          <tr><td class="mono">bundles[]</td><td>Each has <code>id, sku, name, items:[{productId, qty}], storedPrice</code>,
+            plus optional <code>giftIncluded, skipped, note, history, shopifyVariantId</code>.
+            <code>active: false</code> = discontinued.</td></tr>
+          <tr><td class="mono">trash[]</td><td><code>{kind: "product"|"bundle", item, at}</code> — deleted items,
+            restorable until permanently removed.</td></tr>
+          <tr><td class="mono">excludedSkus[]</td><td>Normalised SKUs of products you've deliberately deleted.
+            Never re-added by a sync.</td></tr>
+          <tr><td class="mono">excludedBundleNames[]</td><td>Normalised names of bundles (or no-SKU products) you've
+            deliberately deleted. Never re-added as a bundle shell.</td></tr>
+          <tr><td class="mono">lastSyncAt</td><td>Timestamp of the last one-click sync — drives the 4h cooldown.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Reorder — <code>data/reorder.json</code> or Redis <code>bundle-manager:reorder</code></h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Field</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">items{zohoId}</td><td>From Zoho: <code>name, sku, vendor, unit, reorderLevel,
+            stockOnHand, toReceive, openPOs</code>; flags <code>below, missing</code>; typed here:
+            <code>expectedDate, notes</code>.</td></tr>
+          <tr><td class="mono">manual{SKU}</td><td>Ceramitec bundles' typed fields: <code>toReceive, expectedDate,
+            notes</code>. A Zoho refresh never touches these.</td></tr>
+          <tr><td class="mono">lastSyncAt</td><td>Last refresh of any kind.</td></tr>
+          <tr><td class="mono">lastManualSyncAt</td><td>Last Refresh-button press — drives the 8h cooldown.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Bundles are matched to Shopify by <strong>name</strong> (they have no reliable SKU); products are matched
+      by <strong>SKU</strong>. That asymmetry is why the exclusion list has two separate arrays, and why two
+      bundles sharing a name is flagged as ambiguous (more below) while two products sharing a name isn't.</p>
+  </section>
+
+  <!-- ───────────────────────────── SYNC ───────────────────────────── -->
+  <section id="sync">
+    <h2>The three Shopify sync operations</h2>
+    <p>Three scripts do this independently (each dry-run by default, <code>--apply</code> to write); the
+      in-app button runs all three in one pass — one Shopify fetch, one write.</p>
+    <div class="pipeline">
+      <div class="hop">
+        <div class="hop-where">New products</div>
+        <div class="hop-what">Active Shopify variant, has a SKU, not already in the catalog by SKU, not in
+          <code>excludedSkus</code> → added as a product. A product <em class="term">without</em> a SKU is
+          matched by normalised name instead, and only added with <code>--include-nosku</code>.
+          <span class="file">scripts/sync-store.js · lib/shopifySync.js</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">New bundle shells</div>
+        <div class="hop-what">Active Shopify listing, <em class="term">no</em> SKU, name not already a bundle or
+          product, not a gift-card/voucher/test-item keyword, not in <code>excludedBundleNames</code> → added as
+          an empty bundle (name + price, zero components) — this store's convention is that a combo/packaged
+          listing has no SKU while a real standalone product does.
+          <span class="file">scripts/import-bundle-shells.js · lib/shopifySync.js</span></div>
+      </div>
+      <div class="hop">
+        <div class="hop-where">Stock refresh</div>
+        <div class="hop-what">Every product matched by SKU gets <code>stock</code>/<code>stockTracked</code>
+          updated from Shopify's <code>inventory_quantity</code>. Never adds or removes anything — nothing to
+          update for a deleted product, so deletions are already safe here without any exclusion list.
+          <span class="file">scripts/fetch-stock.js · lib/shopifySync.js</span></div>
+      </div>
+    </div>
+    <p>None of this ever edits an existing product/bundle's price, items, or history — only adds new records
+      and refreshes the stock fields.</p>
+
+    <h3>The "Sync with Shopify" button</h3>
+    <p>One header button, one Shopify fetch, all three operations above in a single write. Throttled to
+      <strong>once every 4 hours</strong>, enforced by the server (<code>POST /api/sync</code>) via
+      <code>lastSyncAt</code> — not just a disabled button, so it's safe even if the endpoint were hit
+      directly. The hosted version backs up the previous document first.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Where</th><th>File</th><th>Writes to</th></tr></thead>
+        <tbody>
+          <tr><td>Hosted (Vercel)</td><td class="mono">api/sync.js</td><td>Upstash Redis</td></tr>
+          <tr><td>Local (<code>npm start</code>)</td><td class="mono">server.js</td><td class="mono">data/data.json</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <span class="note-label">Needs</span>
+      <p><code>SHOPIFY_STORE</code> and <code>SHOPIFY_ADMIN_TOKEN</code> — in <code>.env</code> locally
+        (<code>server.js</code> loads it itself, no other local behavior depends on it), and in the Vercel
+        project's <strong>Environment Variables</strong> for the hosted button. Without them it fails with a
+        clear "Shopify not configured" message.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── DELETIONS ───────────────────────────── -->
+  <section id="deletions">
+    <h2>Deletions are remembered (the exclusion list)</h2>
+    <p>Before this, deleting something didn't stop it coming back — a sync only checks the current live
+      <code>products</code>/<code>bundles</code>, not <code>trash</code>, so a deleted item's SKU/name would
+      look "new" again next time. Now:</p>
+    <div class="fixes">
+      <div class="fix">
+        <div class="fix-head"><h3>On delete</h3><span class="chip">deleteProduct / deleteBundle</span></div>
+        <p>A product with a SKU excludes that SKU. A bundle, <em class="term">or a no-SKU product</em>,
+          excludes its normalised name — because a no-SKU product would only ever come back as a re-detected
+          bundle shell, same as a deleted bundle would.</p>
+      </div>
+      <div class="fix">
+        <div class="fix-head"><h3>On restore</h3><span class="chip">Undo, or Restore from Trash</span></div>
+        <p>Clears the matching exclusion entry. Works whether it's still sitting in Trash or you click Undo
+          right after deleting.</p>
+      </div>
+      <div class="fix">
+        <div class="fix-head"><h3>Permanent delete</h3><span class="chip">Delete from Trash / Empty trash</span></div>
+        <p>No extra step needed — the exclusion was already added at the moment of the original (soft) delete,
+          and permanent deletion doesn't remove it. This is deliberate: once deleted, always excluded, unless
+          restored.</p>
+      </div>
+    </div>
+    <div class="note caution">
+      <span class="note-label">Known limitation</span>
+      <p>These two arrays only ever grow — nothing prunes them automatically. Fine for normal use; worth
+        knowing if you ever do a huge cleanup pass.</p>
+    </div>
+    <div class="note danger">
+      <span class="note-label">A quiet bug this fix exposed — later got much bigger</span>
+      <p>The autosave PUT used to replace the <em>whole</em> stored document with just
+        <code>{products, bundles, trash}</code> — so <code>lastSyncAt</code> (and these exclusion lists)
+        would've been silently wiped on the very next edit after any sync. First fix: merge onto the
+        previous document instead of replacing it. Then a colleague's <strong>"Gift / packaging price
+        included" checkbox got silently reverted</strong> on a real bundle — traced to the same root cause
+        at a larger scale: two people with the app open at once, whoever autosaved second would overwrite
+        the other's edit to <em>any</em> item, not just the one they were touching, because the save still
+        sent (and the server still replaced with) the entire array. Real fix: <code>lib/mergeData.js</code> —
+        the client now diffs against its last confirmed-saved state and sends only what changed (by id); the
+        server reads fresh and merges just those items in, then returns the full merged doc so the client
+        also picks up anyone else's concurrent edits. The push-price endpoint had the same bug in
+        miniature — read once, wait through a slow Shopify round-trip, write the whole array back — fixed
+        with the same read-fresh-then-merge discipline.</p>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── STOCK ───────────────────────────── -->
+  <section id="stock">
+    <h2>Stock &amp; the Out of stock tab</h2>
+    <p>A product only counts as out of stock when it's <strong>active</strong> <em>and</em>
+      <strong>tracked</strong> <em>and</em> at zero — an inactive/discontinued item is already flagged
+      separately as "missing," never double-counted as an OOS blocker.</p>
+
+    <h3>The tab</h3>
+    <ul class="plain">
+      <li><strong>Ceramic / Marble tabs</strong> at the top split everything in two. <em>Marble</em> is
+        anything with "marble" or "vase" in the name, the Claude / Horizon / Arc / Pivot Marble lines, and
+        Buoy coasters and Aura trivets; <em>Ceramic</em> is the rest. A tab with nothing in it is hidden. This
+        is a wider rule than the Products tab's "Marble Atelier" filter, which is just the four named
+        lines.</li>
+      <li><strong>Bundles blocked by an out-of-stock component</strong> (open by default, A–Z) — each bundle
+        with the component(s) holding it up. Click one to edit it in place.</li>
+      <li><strong>Single products at zero stock</strong> (collapsed by default) — every other zero-stock
+        product. A product already named against a bundle above isn't listed again here. Click one to jump to
+        it on Products.</li>
+      <li>Empty sections are hidden rather than shown as "0".</li>
+    </ul>
+
+    <h3>Word download</h3>
+    <p>The button on the right — <strong>Download OOS Ceramic</strong> or <strong>Download OOS Marble</strong>,
+      matching the tab you're on — first refreshes the data, then saves
+      <code>out-of-stock-ceramic-YYYY-MM-DD.docx</code> (or <code>-marble-</code>). The file has a title, the
+      date and counts, and a two-column table: <strong>Name</strong> and <strong>Out of stock</strong>. Bundles
+      come first with their out-of-stock components in the second column; single products follow with that
+      column blank. Same de-duplication as the screen.</p>
+    <div class="note caution">
+      <span class="note-label">How fresh is "refresh"?</span>
+      <p>If the 4h sync cooldown has passed, the download runs a full Shopify sync first. Otherwise it
+        reloads what the server has, which the 4-hourly stock Action keeps current — so at worst the stock
+        is about 4 hours old.</p>
+    </div>
+
+    <h3>Elsewhere</h3>
+    <ul class="plain">
+      <li><strong>Bundle's own sellable stock</strong> — for each active, tracked component, stock ÷ qty
+        needed (rounded down), then the least of those. Shown on the Bundles row and in the editor.</li>
+      <li><strong>"Out of stock" filter pill</strong> on both Bundles and Products — both tabs open on it.</li>
+      <li><strong>Stock column</strong> on Products — <code>—</code> means Shopify isn't tracking inventory for
+        that item, so it's never treated as out of stock.</li>
+      <li>The count on the main nav's "Out of stock" label is <strong>bundles only</strong>, both lines
+        together.</li>
+    </ul>
+  </section>
+
+  <!-- ───────────────────────────── ZOHO ───────────────────────────── -->
+  <section id="zoho">
+    <h2>Zoho Inventory</h2>
+    <p>Separate from everything Shopify. Lists every active, stock-tracked Zoho item whose stock on hand is
+      below its reorder level — the same list as Zoho's <em class="term">Vendor → Order Now</em> screen, plus
+      dates and notes Zoho doesn't have.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Column</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Name, SKU, vendor, reorder level, stock on hand</td><td>Zoho item</td></tr>
+          <tr><td>To be received</td><td>Worked out from open purchase orders: ordered − cancelled − the larger
+            of received/billed; closed POs ignored. Matches Order Now.</td></tr>
+          <tr><td>Still short</td><td>Reorder level − stock − to be received. The "Needs ordering" filter shows
+            rows where this is above zero.</td></tr>
+          <tr><td>Expected by, Notes</td><td>Typed here. "+ Add date" shows relative hints ("in 3 days",
+            "4 days late").</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="plain">
+      <li><strong>Vendor filter</strong> — Hollyhock is pre-selected; the vendor column hides when one vendor
+        is picked.</li>
+      <li><strong>Refresh never deletes a row</strong> and never touches dates/notes. Items back above their
+        reorder level move to <strong>Restocked</strong>; items Zoho stops returning are kept and flagged.</li>
+      <li><strong>Ceramitec bundles</strong> — seven pre-packed sets that are single Shopify products, not
+        Zoho items. Stock on hand comes from Shopify; to be received, expected date and notes are typed in.
+        The SKU list is <code>CERAMITEC_BUNDLE_SKUS</code> in <code>app.src.jsx</code>.</li>
+      <li><strong><code>/inventory</code></strong> — a page with only this table, for sharing with the team.
+        It's behind the same site login, so it hides the rest of the app but doesn't lock anyone out of
+        it.</li>
+    </ul>
+  </section>
+
+  <!-- ───────────────────────────── DISCONTINUED ───────────────────────────── -->
+  <section id="discontinued">
+    <h2>Discontinued vs. Trash</h2>
+    <p>Two different ways to get something out of the way:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th>Discontinued</th><th>Trash</th></tr></thead>
+        <tbody>
+          <tr><td>Means</td><td>No longer sold, kept for the record</td><td>Shouldn't exist</td></tr>
+          <tr><td>Data</td><td>Fully intact — price, history, bundle items</td><td>Moved to <code>trash[]</code></td></tr>
+          <tr><td>Sync</td><td>Stays in the catalog, so never re-added</td><td>Added to the exclusion list</td></tr>
+          <tr><td>Editing</td><td>Name, SKU and price locked on an inactive product</td><td>—</td></tr>
+          <tr><td>Undo</td><td>Restore from the Discontinued tab</td><td>Restore from Trash, or Undo toast</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A bundle containing a discontinued product shows it as "missing", and it's left out of the price sum
+      and out-of-stock checks.</p>
+  </section>
+
+  <!-- ───────────────────────────── SMALLER BEHAVIOURS ───────────────────────────── -->
+  <section>
+    <h2>Smaller behaviours worth knowing</h2>
+    <div class="fixes">
+      <div class="fix">
+        <div class="fix-head"><h3>Duplicate bundle names</h3><span class="chip warn">dup name</span></div>
+        <p>Since bundles are matched by name, two bundles with the exact same (normalised) name are genuinely
+          ambiguous — which one does a Shopify listing, or a future sync, actually mean? Flagged with an amber
+          "dup name" badge and a "Duplicate names" filter pill on the Bundles tab.</p>
+      </div>
+      <div class="fix">
+        <div class="fix-head"><h3>Computed vs. live bundle price</h3><span class="chip">display</span></div>
+        <p>Bundle rows show the <strong>computed sum</strong> of their items — except when <strong>"Gift /
+          packaging price included"</strong> is checked, where the mismatch is deliberate, so it shows the
+          <strong>live Shopify price</strong> instead rather than making it look broken.</p>
+      </div>
+      <div class="fix">
+        <div class="fix-head"><h3>Confirm dialogs</h3><span class="chip">permanent only</span></div>
+        <p>A styled in-app modal, only for actions you can't take back: deleting from Trash, emptying Trash,
+          and pushing a price to Shopify. Ordinary deletes go to Trash with an Undo toast instead.</p>
+      </div>
+      <div class="fix">
+        <div class="fix-head"><h3>Search</h3><span class="chip">token match</span></div>
+        <p>Every word you type must appear somewhere in the name/SKU, any order, partial words OK — "lun pla"
+          finds "Lunar Nude Plate". The "Search everything" box (products and bundles at once) is built but
+          hidden for now.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── HISTORY ───────────────────────────── -->
+  <section id="history">
+    <h2>What shipping each feature actually required</h2>
+    <p>None of these were "just add the feature" — each one surfaced a real edge case once it touched
+      actual data.</p>
+    <div class="fixes">
+
+      <div class="fix">
+        <div class="fix-head"><h3>Push price to Shopify</h3><span class="chip bad">first live-store write</span></div>
+        <p>Everything before this only ever <em class="term">read</em> Shopify or wrote to this app's own
+          data. A price push had to target an exact Shopify variant, not a name/handle looked up at
+          push-time — because we'd already found real Shopify-side duplicates (a draft + an active listing,
+          same name, different prices). So every product/bundle gets its <code>shopifyVariantId</code>
+          captured during any sync (backfilled once against the whole catalog), and a push only ever fires
+          against an id already on file. Confirmed first, since nothing else here writes to the live store.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Marble Atelier / marble-vase-Lush-Diverge silos</h3><span class="chip">keyword matching</span></div>
+        <p>Naive substring matching on <code>"lush"</code> would false-positive on <code>"Blush"</code> —
+          needed whole-word matching instead. Bigger issue: once bundles/products were split into a
+          separate "silo" hidden from the default filters, the jump-to-product / jump-to-bundle navigation
+          could land on an item that's invisible under whatever filter is currently selected — hit this
+          twice, both fixed by checking which silo the target actually lives in before navigating.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Duplicate bundle name flag</h3><span class="chip warn">found a real one</span></div>
+        <p>Building the check surfaced an actual duplicate live in the catalog — two bundles both named
+          <code>"Chaat Table Setting  (7 Pieces)"</code>, same 5 items, same price. The deeper cause turned
+          out to be the exclusion-list gap: a deleted bundle silently resurrected by a sync, then rebuilt by
+          hand. Only empty (never-rebuilt) resurrections are safe to clean up automatically; anything with
+          real component work in it needs a human call.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Sellable stock (qty-aware)</h3><span class="chip bad">wrong the first time</span></div>
+        <p>First version took the raw minimum stock across a bundle's components. Wrong the moment any
+          component needs more than one per bundle — a part needed 9-per-bundle sitting at 58 units
+          supports <strong>6</strong> complete bundles, not 58. Fixed to divide by qty first, floor it,
+          <em>then</em> take the minimum.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Bundle ↔ Product jump navigation</h3><span class="chip">round trip</span></div>
+        <p>Jumping back to a bundle lands on <strong>Needs updating</strong> if it's actually stale there
+          (where you'd act on it), otherwise the plain <strong>Bundles</strong> tab — with the same
+          silo-awareness as above in both directions.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Sticky filter bars</h3><span class="chip">layout</span></div>
+        <p>The header and each tab's filter row both stick, stacked. The second one's offset is measured live
+          (<code>getBoundingClientRect()</code>) rather than hard-coded, so a longer nav label can't break it.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Sort by name / price / stock</h3><span class="chip">null handling</span></div>
+        <p>Items with untracked stock have no number to sort by. Sorting them as zero would cluster them with
+          genuinely-out-of-stock items — so they always sink to the bottom, whichever direction.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Zoho "to be received"</h3><span class="chip warn">not in the API</span></div>
+        <p>Zoho's item API doesn't expose the number its own Order Now screen shows. It's rebuilt from open
+          purchase orders, ignoring closed ones, using the larger of received and billed so a PO billed before
+          it's received isn't counted twice. Calls are rate-limited and access tokens reused, since Zoho caps
+          both.</p>
+      </div>
+
+      <div class="fix">
+        <div class="fix-head"><h3>Out of stock: Ceramic / Marble + download</h3><span class="chip new">Oct 2026</span></div>
+        <p>Listing every zero-stock product under the bundles doubled up — most were already named as a
+          bundle's blocker. Those are now left out of the product list, on screen and in the Word file. The
+          download refreshes before building, and works within the shared 4h sync cooldown rather than
+          getting around it.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── SETUP ───────────────────────────── -->
+  <section id="setup">
+    <h2>Setup reference</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="mono">Variable</th><th>Needed for</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">KV_REST_API_URL / TOKEN</td><td>Upstash Redis (or the
+            <code>UPSTASH_REDIS_REST_*</code> pair)</td><td>Vercel, Actions, local scripts</td></tr>
+          <tr><td class="mono">SHOPIFY_STORE</td><td>e.g. <code>your-store.myshopify.com</code></td><td>Vercel,
+            Actions, <code>.env</code></td></tr>
+          <tr><td class="mono">SHOPIFY_ADMIN_TOKEN</td><td>Offline access token (see below)</td><td>Vercel,
+            Actions, <code>.env</code></td></tr>
+          <tr><td class="mono">ZOHO_CLIENT_ID / SECRET</td><td>Zoho Self Client</td><td>Vercel, Actions,
+            <code>.env</code></td></tr>
+          <tr><td class="mono">ZOHO_REFRESH_TOKEN</td><td>Read-only scopes</td><td>Vercel, Actions,
+            <code>.env</code></td></tr>
+          <tr><td class="mono">ZOHO_ORG_ID</td><td>The Zoho organisation</td><td>Vercel, Actions,
+            <code>.env</code></td></tr>
+          <tr><td class="mono">BASIC_AUTH_USER / PASS</td><td>Site login — the site is open until both are
+            set</td><td>Vercel only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="plain">
+      <li><strong>Shopify scopes:</strong> <code>write_products</code> (write implies read) +
+        <code>read_inventory</code> for stock.</li>
+      <li><strong>Getting the Shopify token:</strong> this app was created via Shopify's Dev Dashboard, so the
+        <em class="term">client credentials grant</em> (Client ID + Secret → token) doesn't work — it only
+        works when the app and store share a Dev Dashboard organization, and this store doesn't. The
+        <em class="term">authorization code grant</em> (browser approval round-trip) works regardless, and is
+        what actually produced the working <code>shpca_…</code> token.</li>
+      <li><strong>Zoho scopes:</strong> a Self Client at api-console.zoho.in with
+        <code>ZohoInventory.items.READ, ZohoInventory.purchaseorders.READ, ZohoInventory.contacts.READ</code>.</li>
+      <li><strong>Hosted (Vercel):</strong> add the vars to the project's Environment Variables, then
+        <strong>Redeploy</strong> — adding a var alone doesn't apply it to the live deployment.</li>
+      <li><strong>GitHub Actions:</strong> the same values as repo secrets. <code>fetch-stock.yml</code> every
+        4h, <code>zoho-reorder.yml</code> every 8h, <code>sync-store.yml</code> weekly (dry run by default).</li>
+      <li><strong>Changing the UI:</strong> edit <code>public/app.src.jsx</code>, recompile to
+        <code>public/app.js</code> with Babel <code>preset-react</code>, commit both.</li>
+    </ul>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="mono">Command</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">npm start</td><td>Local app at <code>http://localhost:4321</code></td></tr>
+          <tr><td class="mono">npm run fetch-stock</td><td>Shopify stock (dry run; <code>-- --apply</code>)</td></tr>
+          <tr><td class="mono">npm run sync-store -- --shopify</td><td>New products check (dry run)</td></tr>
+          <tr><td class="mono">npm run import-bundle-shells</td><td>New bundle shells (dry run)</td></tr>
+          <tr><td class="mono">npm run zoho-reorder</td><td>Zoho refresh (dry run)</td></tr>
+          <tr><td class="mono">npm run pull</td><td>Download the live catalog to <code>data/</code></td></tr>
+          <tr><td class="mono">npm run seed</td><td>Push <code>data/data.json</code> into Redis (first setup)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Worth knowing, not a bug</h2>
+    <p>A Shopify-side duplicate — two listings with the identical name, one draft with the correct price, one
+      <em>active</em> at ₹0 — will sync in whichever is active, ₹0 included. Verified directly against the
+      Shopify API: the code was correctly reading exactly what Shopify returned. That's a data-hygiene issue
+      on the Shopify side (archive/fix the stray duplicate there), not something the sync logic should second-guess.</p>
+  </section>
+
+  <footer>
+    Covers the app as of October 2026 — system design, all eight tabs, Shopify sync and price push, the
+    deletion exclusion list, stock and out-of-stock (Ceramic / Marble, Word download), the Zoho Inventory
+    list and <code>/inventory</code> page, and Discontinued.
+  </footer>
+
+</div>
+
+</body>
+</html>
