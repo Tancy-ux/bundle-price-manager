@@ -271,6 +271,24 @@ function App() {
       setConfirmState({ title, detail, confirmLabel, danger, resolve }),
     );
 
+  // take a full data doc from the server as the new truth
+  function adoptData(d) {
+    const merged = {
+      products: d.products || [],
+      bundles: d.bundles || [],
+      trash: d.trash || [],
+      excludedSkus: d.excludedSkus || [],
+      excludedBundleNames: d.excludedBundleNames || [],
+    };
+    baselineRef.current = merged; // otherwise the next autosave would diff against a stale baseline
+    setProducts(merged.products);
+    setBundles(merged.bundles);
+    setTrash(merged.trash);
+    setExcludedSkus(merged.excludedSkus);
+    setExcludedBundleNames(merged.excludedBundleNames);
+    setLastSyncAt(d.lastSyncAt || null);
+  }
+
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
   // Throttled server-side to once/4h; syncEligible below mirrors that for the UI.
@@ -288,24 +306,12 @@ function App() {
         flash(j.error || "Sync failed");
         return;
       }
-      const merged = {
-        products: j.data.products || [],
-        bundles: j.data.bundles || [],
-        trash: j.data.trash || [],
-        excludedSkus: j.data.excludedSkus || [],
-        excludedBundleNames: j.data.excludedBundleNames || [],
-      };
-      baselineRef.current = merged; // otherwise the next autosave would diff against a stale pre-sync baseline
-      setProducts(merged.products);
-      setBundles(merged.bundles);
-      setTrash(merged.trash);
-      setExcludedSkus(merged.excludedSkus);
-      setExcludedBundleNames(merged.excludedBundleNames);
-      setLastSyncAt(j.data.lastSyncAt || null);
+      adoptData(j.data);
       const s = j.summary;
       flash(
         `Synced: +${s.addedProducts} products, +${s.addedBundles} bundles, stock updated on ${s.stockUpdated} (${s.totalOOS} out of stock)`,
       );
+      return j.data;
     } catch (e) {
       flash("Sync failed — is the server running?");
     } finally {
@@ -316,6 +322,18 @@ function App() {
   const syncEligible =
     !lastSyncAt ||
     Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
+
+  // out-of-stock .docx: pull the freshest stock first — a full Shopify sync
+  // when the 4h cooldown allows, otherwise whatever the server has now
+  // (the scheduled stock check keeps that current)
+  async function exportOOS(atelier) {
+    let d = syncEligible ? await syncNow() : null;
+    if (!d) {
+      d = await apiGet();
+      adoptData(d);
+    }
+    await downloadOOSDocx(d.products || [], d.bundles || [], atelier);
+  }
 
   // push one item's price straight to its linked Shopify variant. Only ever
   // sends {id, price} to Shopify — see lib/shopifySync.js's pushVariantPrice.
@@ -894,6 +912,7 @@ function App() {
             onSkip={skipBundle}
             pushPrice={pushPriceToShopify}
             onJumpToProduct={jumpToProduct}
+            onExport={exportOOS}
           />
         )}
         {tab === "discontinued" && (
@@ -2742,6 +2761,16 @@ const isMarbleAtelier = (name) => {
     (w.includes("pivot") && w.includes("marble"))
   );
 };
+// the Out of stock tab's "Marble" split — wider than the Products tab's
+// Marble Atelier silo: anything marble or vase, plus the Buoy coasters and
+// Aura trivets
+const isMarbleLine = (name) => {
+  const w = norm(name).split(" ");
+  return (
+    isMarbleAtelier(name) ||
+    ["marble", "vase", "vases", "buoy", "aura"].some((x) => w.includes(x))
+  );
+};
 function Products({
   products,
   setProducts,
@@ -3462,11 +3491,115 @@ function WhereUsed({ bundles, products, compute }) {
   );
 }
 
+// the docx library is only needed for the out-of-stock download, so it's
+// pulled from the CDN on first use rather than on every page load
+let docxLoading = null;
+function loadDocx() {
+  if (window.docx) return Promise.resolve(window.docx);
+  if (!docxLoading)
+    docxLoading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://unpkg.com/docx@9.8.1/dist/index.umd.cjs";
+      s.onload = () => resolve(window.docx);
+      s.onerror = () => {
+        docxLoading = null;
+        reject(new Error("Couldn't load the Word export library"));
+      };
+      document.head.appendChild(s);
+    });
+  return docxLoading;
+}
+
+// one row per out-of-stock bundle (with the components that are out) and
+// per out-of-stock single product (blank second column). `atelier` picks
+// the marble line (see isMarbleLine) instead of everything else.
+async function downloadOOSDocx(products, bundles, atelier) {
+  const byId = Object.fromEntries(products.map((p) => [p.id, p]));
+  const isOOS = (p) => p && p.active && p.stockTracked && (p.stock || 0) <= 0;
+  const keep = (name) => isMarbleLine(name) === atelier;
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const inBundleRows = new Set(); // products already named against a bundle
+  const bundleRows = bundles
+    .filter((b) => b.active !== false && keep(b.name))
+    .map((b) => {
+      const off = [
+        ...new Set(b.items.map((it) => byId[it.productId]).filter(isOOS)),
+      ];
+      off.forEach((p) => inBundleRows.add(p.id));
+      return { name: b.name, off: off.map((p) => p.name).join(", ") };
+    })
+    .filter((r) => r.off)
+    .sort(byName);
+  const productRows = products
+    .filter((p) => isOOS(p) && keep(p.name) && !inBundleRows.has(p.id))
+    .map((p) => ({ name: p.name, off: "" }))
+    .sort(byName);
+
+  const {
+    Document,
+    Packer,
+    Paragraph,
+    TextRun,
+    Table,
+    TableRow,
+    TableCell,
+    WidthType,
+    HeadingLevel,
+  } = await loadDocx();
+  const cell = (text, bold) =>
+    new TableCell({
+      children: [new Paragraph({ children: [new TextRun({ text, bold })] })],
+    });
+  const rows = [...bundleRows, ...productRows];
+  const title = `Out of stock — ${atelier ? "Marble" : "Ceramic"}`;
+  const date = new Date().toISOString().slice(0, 10);
+  const doc = new Document({
+    sections: [
+      {
+        children: [
+          new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }),
+          new Paragraph({
+            text: [
+              date,
+              bundleRows.length && `${bundleRows.length} bundles`,
+              productRows.length && `${productRows.length} products`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            spacing: { after: 200 },
+          }),
+          rows.length
+            ? new Table({
+                width: { size: 100, type: WidthType.PERCENTAGE },
+                rows: [
+                  new TableRow({
+                    tableHeader: true,
+                    children: [cell("Name", true), cell("Out of stock", true)],
+                  }),
+                  ...rows.map(
+                    (r) =>
+                      new TableRow({ children: [cell(r.name), cell(r.off)] }),
+                  ),
+                ],
+              })
+            : new Paragraph("Nothing out of stock."),
+        ],
+      },
+    ],
+  });
+  const blob = await Packer.toBlob(doc);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `out-of-stock-${atelier ? "marble" : "ceramic"}-${date}.docx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 // "Out of stock" — every bundle that can't be fulfilled right now because at
 // least one of its components has zero tracked stock in Shopify, and exactly
 // which component(s) those are. Fed by the stock the fetch-stock script pulls in.
 function StockIssues({
-  oosList,
+  oosList: allOosBundles,
   bundles,
   setBundles,
   byId,
@@ -3477,134 +3610,360 @@ function StockIssues({
   onSkip,
   pushPrice,
   onJumpToProduct,
+  onExport,
 }) {
   const [openId, setOpenId] = useState(null);
+  const [view, setView] = useState("main"); // main (ceramic) | atelier (marble line, see isMarbleLine)
+  const [exporting, setExporting] = useState(false);
+  // bundles start open; single products start collapsed to keep the scroll short
+  const [openSec, setOpenSec] = useState({ bundles: true, products: false });
+  // an empty section is hidden outright rather than shown as "0"
+  const sectionHeader = (key, label, count) =>
+    count > 0 && (
+      <button
+        onClick={() => setOpenSec({ ...openSec, [key]: !openSec[key] })}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "12px 14px",
+          marginTop: key === "products" && oosList.length ? 10 : 0,
+          background: "var(--card)",
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ color: "var(--muted)", fontSize: 12, width: 12 }}>
+          {openSec[key] ? "▾" : "▸"}
+        </span>
+        <span className="serif" style={{ flex: 1, fontSize: 17 }}>
+          {label}
+        </span>
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: "var(--clay)",
+          }}
+        >
+          {count}
+        </span>
+      </button>
+    );
   const update = (id, patch) =>
     setBundles(bundles.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
-  if (!oosList.length)
-    return (
-      <div
+  async function runExport() {
+    setExporting(true);
+    try {
+      await onExport(view === "atelier");
+    } catch (e) {
+      alert(e.message || "Download failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // single products at zero tracked stock, each with how many live bundles
+  // it's blocking — shown under the bundles so loose items aren't missed
+  const allOosProducts = useMemo(() => {
+    const usedIn = {};
+    bundles
+      .filter((b) => b.active !== false)
+      .forEach((b) =>
+        new Set(b.items.map((it) => it.productId)).forEach((id) => {
+          usedIn[id] = (usedIn[id] || 0) + 1;
+        }),
+      );
+    return products
+      .filter((p) => p.active && p.stockTracked && (p.stock || 0) <= 0)
+      .map((p) => ({ p, used: usedIn[p.id] || 0 }))
+      .sort((a, b) => a.p.name.localeCompare(b.p.name));
+  }, [products, bundles]);
+  const inView = (name, v) => isMarbleLine(name) === (v === "atelier");
+  // per view: its bundles, plus single products not already named as one
+  // of those bundles' blockers (that would list the same thing twice)
+  const viewLists = (v) => {
+    const bs = allOosBundles.filter((x) => inView(x.b.name, v));
+    const named = new Set(
+      bs.flatMap(({ c }) => c.oosItems.map((x) => x.product.id)),
+    );
+    const ps = allOosProducts.filter(
+      (x) => inView(x.p.name, v) && !named.has(x.p.id),
+    );
+    return [bs, ps];
+  };
+  const viewCount = (v) => viewLists(v).reduce((n, l) => n + l.length, 0);
+  const [oosList, oosProducts] = viewLists(view);
+
+  const toolbar = (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        flexWrap: "wrap",
+        marginBottom: 12,
+      }}
+    >
+      {[
+        ["main", "Ceramic"],
+        ["atelier", "Marble"],
+      ].map(([k, label]) =>
+        // a view with nothing out of stock isn't worth a pill (unless it's the one open)
+        viewCount(k) === 0 && view !== k ? null : (
+          <button
+            key={k}
+            onClick={() => {
+              setView(k);
+              setOpenId(null);
+            }}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              border: `1px solid ${view === k ? "var(--clay)" : "var(--line)"}`,
+              background: view === k ? "var(--clayDim)" : "#fff",
+              color: view === k ? "var(--clay)" : "var(--muted)",
+            }}
+          >
+            {label} ({viewCount(k)})
+          </button>
+        ),
+      )}
+      <span style={{ flex: 1 }} />
+      <button
+        onClick={runExport}
+        disabled={exporting}
+        title="Refreshes stock, then downloads a Word doc"
         style={{
-          textAlign: "center",
-          padding: "60px 20px",
-          background: "var(--card)",
+          padding: "7px 12px",
+          borderRadius: 8,
           border: "1px solid var(--line)",
-          borderRadius: 14,
+          background: "var(--card)",
+          fontSize: 12.5,
+          fontWeight: 600,
+          color: "var(--ink)",
+          cursor: exporting ? "default" : "pointer",
         }}
       >
+        {exporting
+          ? "Refreshing…"
+          : view === "atelier"
+            ? "⬇ Download OOS Marble (.docx)"
+            : "⬇ Download OOS Ceramic (.docx)"}
+      </button>
+    </div>
+  );
+
+  if (!oosList.length && !oosProducts.length)
+    return (
+      <div>
+        {toolbar}
         <div
           style={{
-            width: 52,
-            height: 52,
-            borderRadius: 999,
-            background: "var(--sageDim)",
-            color: "var(--sage)",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 26,
-            margin: "0 auto 14px",
+            textAlign: "center",
+            padding: "60px 20px",
+            background: "var(--card)",
+            border: "1px solid var(--line)",
+            borderRadius: 14,
           }}
         >
-          ✓
+          <div
+            style={{
+              width: 52,
+              height: 52,
+              borderRadius: 999,
+              background: "var(--sageDim)",
+              color: "var(--sage)",
+              display: "grid",
+              placeItems: "center",
+              fontSize: 26,
+              margin: "0 auto 14px",
+            }}
+          >
+            ✓
+          </div>
+          <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+            Nothing out of stock
+          </h2>
+          <p
+            style={{
+              color: "var(--muted)",
+              maxWidth: 420,
+              margin: "0 auto",
+              lineHeight: 1.5,
+            }}
+          >
+            Every product and bundle component has stock, as of the last sync.
+            Run <code>npm run fetch-stock</code> (or wait for the scheduled
+            check) to refresh.
+          </p>
         </div>
-        <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
-          Nothing out of stock
-        </h2>
-        <p
-          style={{
-            color: "var(--muted)",
-            maxWidth: 420,
-            margin: "0 auto",
-            lineHeight: 1.5,
-          }}
-        >
-          Every bundle's components have stock, as of the last sync. Run{" "}
-          <code>npm run fetch-stock</code> (or wait for the scheduled check) to
-          refresh.
-        </p>
       </div>
     );
 
   return (
     <div>
-      <p style={note}>
-        {oosList.length} bundle{oosList.length > 1 ? "s" : ""} blocked by an
-        out-of-stock component.
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {oosList.map(({ b, c }) => {
-          const open = openId === b.id;
-          return (
-            <div
-              key={b.id}
-              style={{
-                background: "var(--card)",
-                border: "1px solid var(--clay)",
-                borderLeft: "3px solid var(--clay)",
-                borderRadius: 10,
-                overflow: "hidden",
-              }}
-            >
-              <button
-                onClick={() => setOpenId(open ? null : b.id)}
+      {toolbar}
+      {sectionHeader(
+        "bundles",
+        "Bundles blocked by an out-of-stock component",
+        oosList.length,
+      )}
+      {openSec.bundles && oosList.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            marginTop: 6,
+          }}
+        >
+          {oosList.map(({ b, c }) => {
+            const open = openId === b.id;
+            return (
+              <div
+                key={b.id}
                 style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "11px 14px",
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
+                  background: "var(--card)",
+                  border: "1px solid var(--clay)",
+                  borderLeft: "3px solid var(--clay)",
+                  borderRadius: 10,
+                  overflow: "hidden",
                 }}
               >
-                <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600 }}>
-                  {b.name}
-                  {b.sku && (
-                    <span
-                      style={{
-                        fontSize: 11.5,
-                        color: "var(--muted)",
-                        marginLeft: 6,
-                      }}
-                    >
-                      {b.sku}
-                    </span>
-                  )}
-                </span>
-                <span
+                <button
+                  onClick={() => setOpenId(open ? null : b.id)}
                   style={{
-                    fontSize: 13,
-                    color: "var(--clay)",
-                    fontWeight: 600,
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "11px 14px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
                   }}
                 >
-                  {c.oosItems.map((x) => x.product.name).join(", ")}
+                  <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600 }}>
+                    {b.name}
+                    {b.sku && (
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--muted)",
+                          marginLeft: 6,
+                        }}
+                      >
+                        {b.sku}
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: "var(--clay)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {c.oosItems.map((x) => x.product.name).join(", ")}
+                  </span>
+                  <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                    {open ? "▾" : "▸"}
+                  </span>
+                </button>
+                {open && (
+                  <BundleEditor
+                    b={b}
+                    update={update}
+                    byId={byId}
+                    products={products}
+                    compute={compute}
+                    onDelete={onDelete}
+                    onPromote={onPromote}
+                    onSkip={onSkip}
+                    pushPrice={pushPrice}
+                    onJumpToProduct={onJumpToProduct}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {sectionHeader(
+        "products",
+        "Single products at zero stock",
+        oosProducts.length,
+      )}
+      {openSec.products && oosProducts.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            marginTop: 6,
+          }}
+        >
+          {oosProducts.map(({ p, used }) => (
+            <button
+              key={p.id}
+              onClick={() => onJumpToProduct(p)}
+              title="Open in Products"
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "11px 14px",
+                background: "var(--card)",
+                border: "1px solid var(--line)",
+                borderLeft: "3px solid var(--clay)",
+                borderRadius: 10,
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600 }}>
+                {p.name}
+                {p.sku && (
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--muted)",
+                      marginLeft: 6,
+                    }}
+                  >
+                    {p.sku}
+                  </span>
+                )}
+              </span>
+              {used > 0 && (
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                  in {used} bundle{used > 1 ? "s" : ""}
                 </span>
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>
-                  {open ? "▾" : "▸"}
-                </span>
-              </button>
-              {open && (
-                <BundleEditor
-                  b={b}
-                  update={update}
-                  byId={byId}
-                  products={products}
-                  compute={compute}
-                  onDelete={onDelete}
-                  onPromote={onPromote}
-                  onSkip={onSkip}
-                  pushPrice={pushPrice}
-                  onJumpToProduct={onJumpToProduct}
-                />
               )}
-            </div>
-          );
-        })}
-      </div>
+              <span
+                style={{
+                  fontSize: 13,
+                  color: "var(--clay)",
+                  fontWeight: 700,
+                }}
+              >
+                {p.stock || 0}
+              </span>
+              <span style={{ color: "var(--muted)", fontSize: 12 }}>↗</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
