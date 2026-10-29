@@ -2391,6 +2391,12 @@ const isMarbleAtelier = name => {
   const w = norm(name).split(" ");
   return w.includes("claude") || w.includes("horizon") || w.includes("arc") || w.includes("pivot") && w.includes("marble");
 };
+// the Zoho Inventory page's Marble Atelier table — the Products tab's silo
+// plus the Pivot stacking vases, whose names don't say "marble"
+const isZohoMarble = name => {
+  const w = norm(name).split(" ");
+  return isMarbleAtelier(name) || w.includes("pivot") && (w.includes("vase") || w.includes("vases"));
+};
 // the Out of stock tab's "Marble" split — wider than the Products tab's
 // Marble Atelier silo: anything marble or vase, plus the Buoy coasters and
 // Aura trivets
@@ -3589,7 +3595,18 @@ function Reorder({
   // catalog); composites are every active one in Zoho.
   const ws = doc.warehouseStock;
   const shopifySkus = useMemo(() => new Set((products || []).filter(p => p.active !== false && p.sku).map(p => normSku(p.sku))), [products]);
-  const whItems = useMemo(() => ws ? ws.items.filter(r => shopifySkus.has(normSku(r.sku))) : [], [ws, shopifySkus]);
+  // the Marble Atelier line gets its own table, out of Items / Composites
+  const whTables = useMemo(() => {
+    const t = {
+      items: [],
+      composites: [],
+      marble: []
+    };
+    if (!ws) return t;
+    for (const r of ws.items) if (shopifySkus.has(normSku(r.sku))) t[isZohoMarble(r.name) ? "marble" : "items"].push(r);
+    for (const r of ws.composites) t[isZohoMarble(r.name) ? "marble" : "composites"].push(r);
+    return t;
+  }, [ws, shopifySkus]);
   // Zoho's numbers for the Ceramitec sets, by SKU — most are composites, so
   // those win over a plain item with the same SKU
   const zohoBySku = useMemo(() => {
@@ -3714,7 +3731,7 @@ function Reorder({
       marginBottom: 10,
       flexWrap: "wrap"
     }
-  }, [["reorder", `Reorder list (${counts.below})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`], ["items", `Items by warehouse${ws ? ` (${whItems.length})` : ""}`], ["composites", `Composite items${ws ? ` (${ws.composites.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["reorder", `Reorder list (${counts.below})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`], ["items", `Items by warehouse${ws ? ` (${whTables.items.length})` : ""}`], ["composites", `Composite items${ws ? ` (${whTables.composites.length})` : ""}`], ["marble", `Marble Atelier${ws ? ` (${whTables.marble.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setTable(k),
     style: tableTab(table === k)
@@ -3777,10 +3794,10 @@ function Reorder({
     onSave: saveManual,
     zoho: ws ? zohoBySku : null
   }));
-  if (table === "items" || table === "composites") return /*#__PURE__*/React.createElement(WarehouseStock, {
+  if (table in whTables) return /*#__PURE__*/React.createElement(WarehouseStock, {
     key: table,
     ws: ws,
-    rows: table === "items" ? whItems : ws ? ws.composites : [],
+    rows: whTables[table],
     q: q,
     kind: table,
     headerWith: headerWith
@@ -4112,6 +4129,30 @@ function WarehouseStock({
   const [sortBy, setSortBy] = useState("name"); // name | transit | onHand | committed | available
   const [sortDir, setSortDir] = useState("asc");
   const whs = ws ? ws.warehouses : [];
+  // typing in search stays snappy — the table catches up a beat later
+  const dq = React.useDeferredValue(q);
+
+  // hundreds of rows at once froze the page on every click / keystroke, so
+  // they go in pages: the next one loads as "Show more" scrolls into view
+  const [limit, setLimit] = useState(WH_PAGE);
+  useEffect(() => setLimit(WH_PAGE), [filter, dq, sortBy, sortDir]);
+  const moreRef = useRef(null);
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el || !window.IntersectionObserver) return;
+    const io = new IntersectionObserver(es => {
+      if (es[0].isIntersecting) setLimit(n => n + WH_PAGE);
+    }, {
+      rootMargin: "400px"
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  });
+  const grid = useMemo(() => ({
+    display: "grid",
+    gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
+    gap: 12
+  }), [whs.length]);
   const withTotals = useMemo(() => rows.map(r => ({
     ...r,
     ...whTotals(r, whs)
@@ -4131,12 +4172,12 @@ function WarehouseStock({
       committed: r => r.committed > 0,
       transit: r => r.transit !== 0
     }[filter];
-    const list = withTotals.filter(r => keep(r) && matchText(q, `${r.name} ${r.sku}`));
+    const list = withTotals.filter(r => keep(r) && matchText(dq, `${r.name} ${r.sku}`));
     const dir = sortDir === "asc" ? 1 : -1;
     const byName = (a, b) => a.name.localeCompare(b.name);
     list.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (a[sortBy] - b[sortBy]) || byName(a, b));
     return list;
-  }, [withTotals, filter, q, sortBy, sortDir]);
+  }, [withTotals, filter, dq, sortBy, sortDir]);
   if (!ws) return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
@@ -4154,31 +4195,15 @@ function WarehouseStock({
       setSortDir(col === "name" ? "asc" : "desc");
     }
   };
-  // the name stays put while the numbers scroll sideways (phones)
-  const stickyName = {
-    position: "sticky",
-    left: 0,
-    zIndex: 1,
-    background: "var(--card)",
-    marginLeft: -16,
-    paddingLeft: 16,
-    minWidth: 0
-  };
   const th = (label, col) => /*#__PURE__*/React.createElement("div", {
     onClick: () => toggleSort(col),
     style: {
-      ...(col === "name" ? stickyName : null),
+      ...(col === "name" ? whStickyName : null),
       textAlign: col === "name" ? "left" : "center",
       cursor: "pointer",
       userSelect: "none"
     }
   }, label, sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "");
-  const grid = {
-    display: "grid",
-    gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
-    gap: 12
-  };
-  const stockColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
   return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setFilter(k),
@@ -4222,8 +4247,48 @@ function WarehouseStock({
       color: "var(--muted)",
       fontSize: 14
     }
-  }, "No items match."), shown.map(r => /*#__PURE__*/React.createElement("div", {
+  }, "No items match."), shown.slice(0, limit).map(r => /*#__PURE__*/React.createElement(WarehouseRow, {
     key: r.id,
+    r: r,
+    whs: whs,
+    grid: grid
+  })))), shown.length > limit && /*#__PURE__*/React.createElement("div", {
+    ref: moreRef,
+    style: {
+      textAlign: "center",
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setLimit(n => n + WH_PAGE),
+    style: btnSec
+  }, "Show more (", shown.length - limit, " left)")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      ...note,
+      marginTop: 10
+    }
+  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. " : kind === "marble" ? "The Marble Atelier line (Claude, Horizon, Arc, Pivot marble and Pivot vases) — live-on-Shopify items plus any composites. " : "Every active composite item in Zoho, apart from the Marble Atelier line. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."));
+}
+const WH_PAGE = 100;
+// the name stays put while the numbers scroll sideways (phones)
+const whStickyName = {
+  position: "sticky",
+  left: 0,
+  zIndex: 1,
+  background: "var(--card)",
+  marginLeft: -16,
+  paddingLeft: 16,
+  minWidth: 0
+};
+const whStockColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
+
+// one WarehouseStock row — memo'd so a click elsewhere (a filter, the
+// refresh countdown) doesn't redraw every row
+const WarehouseRow = React.memo(function WarehouseRow({
+  r,
+  whs,
+  grid
+}) {
+  return /*#__PURE__*/React.createElement("div", {
     style: {
       ...grid,
       padding: "10px 16px",
@@ -4232,7 +4297,7 @@ function WarehouseStock({
       fontSize: 14
     }
   }, /*#__PURE__*/React.createElement("div", {
-    style: stickyName
+    style: whStickyName
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontWeight: 600
@@ -4266,7 +4331,7 @@ function WarehouseStock({
     style: {
       ...midCell,
       fontWeight: 600,
-      color: stockColor(r.onHand)
+      color: whStockColor(r.onHand)
     }
   }, r.onHand), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4277,7 +4342,7 @@ function WarehouseStock({
     style: {
       ...midCell,
       fontWeight: 600,
-      color: stockColor(r.available)
+      color: whStockColor(r.available)
     }
   }, r.available)) : /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4285,13 +4350,8 @@ function WarehouseStock({
       gridColumn: "span 4",
       color: "var(--muted)"
     }
-  }, "not tracked"))))), /*#__PURE__*/React.createElement("p", {
-    style: {
-      ...note,
-      marginTop: 10
-    }
-  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog). " : "Every active composite item in Zoho. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."));
-}
+  }, "not tracked"));
+});
 
 // a Ceramitec set's Zoho number, flagged when it doesn't match Shopify's
 function ZohoStockCell({
