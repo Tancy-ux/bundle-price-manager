@@ -5012,8 +5012,22 @@ const whStickyName = {
   paddingLeft: 16,
   minWidth: 0,
 };
-const whStockColor = (n) =>
-  n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
+// a plain number: grey when 0, red when negative
+const whNum = (n) => (n < 0 ? "var(--clay)" : n ? "var(--ink)" : "var(--muted)");
+// Available is the number that matters, so it gets a badge: red when
+// nothing's left to sell, amber when it's low, green otherwise
+const whAvailBadge = (n) => ({
+  display: "inline-block",
+  minWidth: 44,
+  padding: "2px 8px",
+  borderRadius: 999,
+  fontWeight: 700,
+  ...(n <= 0
+    ? { color: "var(--clay)", background: "var(--clayDim)" }
+    : n < 10
+      ? { color: "var(--amber)", background: "#f3e6c8" }
+      : { color: "var(--sage)", background: "var(--sageDim)" }),
+});
 
 // one WarehouseStock row — memo'd so a click elsewhere (a filter, the
 // refresh countdown) doesn't redraw every row
@@ -5036,19 +5050,23 @@ const WarehouseRow = React.memo(function WarehouseRow({ r, whs, grid }) {
         const [h, c] = r.byWarehouse[w.id] || [0, 0];
         return (
           <div key={w.id} style={midCell}>
-            <div style={{ color: h ? "var(--ink)" : "var(--muted)" }}>{h}</div>
+            <div style={{ color: whNum(h) }}>{h}</div>
             {c !== 0 && (
-              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{c} committed</div>
+              <div style={{ fontSize: 11.5, color: "var(--amber)" }}>{c} committed</div>
             )}
           </div>
         );
       })}
       {r.tracked ? (
         <>
-          <div style={{ ...midCell, color: r.transit ? "var(--ink)" : "var(--muted)" }}>{r.transit}</div>
-          <div style={{ ...midCell, fontWeight: 600, color: whStockColor(r.onHand) }}>{r.onHand}</div>
-          <div style={{ ...midCell, color: r.committed ? "var(--ink)" : "var(--muted)" }}>{r.committed}</div>
-          <div style={{ ...midCell, fontWeight: 600, color: whStockColor(r.available) }}>{r.available}</div>
+          <div style={{ ...midCell, color: whNum(r.transit) }}>{r.transit}</div>
+          <div style={{ ...midCell, fontWeight: 600, color: whNum(r.onHand) }}>{r.onHand}</div>
+          <div style={{ ...midCell, fontWeight: r.committed ? 600 : 400, color: r.committed ? "var(--amber)" : "var(--muted)" }}>
+            {r.committed}
+          </div>
+          <div style={midCell}>
+            <span style={whAvailBadge(r.available)}>{r.available}</span>
+          </div>
         </>
       ) : (
         <div style={{ ...midCell, gridColumn: "span 4", color: "var(--muted)" }}>not tracked</div>

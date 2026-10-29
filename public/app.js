@@ -4279,7 +4279,27 @@ const whStickyName = {
   paddingLeft: 16,
   minWidth: 0
 };
-const whStockColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
+// a plain number: grey when 0, red when negative
+const whNum = n => n < 0 ? "var(--clay)" : n ? "var(--ink)" : "var(--muted)";
+// Available is the number that matters, so it gets a badge: red when
+// nothing's left to sell, amber when it's low, green otherwise
+const whAvailBadge = n => ({
+  display: "inline-block",
+  minWidth: 44,
+  padding: "2px 8px",
+  borderRadius: 999,
+  fontWeight: 700,
+  ...(n <= 0 ? {
+    color: "var(--clay)",
+    background: "var(--clayDim)"
+  } : n < 10 ? {
+    color: "var(--amber)",
+    background: "#f3e6c8"
+  } : {
+    color: "var(--sage)",
+    background: "var(--sageDim)"
+  })
+});
 
 // one WarehouseStock row — memo'd so a click elsewhere (a filter, the
 // refresh countdown) doesn't redraw every row
@@ -4314,37 +4334,36 @@ const WarehouseRow = React.memo(function WarehouseRow({
       style: midCell
     }, /*#__PURE__*/React.createElement("div", {
       style: {
-        color: h ? "var(--ink)" : "var(--muted)"
+        color: whNum(h)
       }
     }, h), c !== 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11.5,
-        color: "var(--muted)"
+        color: "var(--amber)"
       }
     }, c, " committed"));
   }), r.tracked ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
-      color: r.transit ? "var(--ink)" : "var(--muted)"
+      color: whNum(r.transit)
     }
   }, r.transit), /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
       fontWeight: 600,
-      color: whStockColor(r.onHand)
+      color: whNum(r.onHand)
     }
   }, r.onHand), /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
-      color: r.committed ? "var(--ink)" : "var(--muted)"
+      fontWeight: r.committed ? 600 : 400,
+      color: r.committed ? "var(--amber)" : "var(--muted)"
     }
   }, r.committed), /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...midCell,
-      fontWeight: 600,
-      color: whStockColor(r.available)
-    }
-  }, r.available)) : /*#__PURE__*/React.createElement("div", {
+    style: midCell
+  }, /*#__PURE__*/React.createElement("span", {
+    style: whAvailBadge(r.available)
+  }, r.available))) : /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
       gridColumn: "span 4",
