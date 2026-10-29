@@ -4281,25 +4281,8 @@ const whStickyName = {
 };
 // a plain number: grey when 0, red when negative
 const whNum = n => n < 0 ? "var(--clay)" : n ? "var(--ink)" : "var(--muted)";
-// Available is the number that matters, so it gets a badge: red when
-// nothing's left to sell, amber when it's low, green otherwise
-const whAvailBadge = n => ({
-  display: "inline-block",
-  minWidth: 44,
-  padding: "2px 8px",
-  borderRadius: 999,
-  fontWeight: 700,
-  ...(n <= 0 ? {
-    color: "var(--clay)",
-    background: "var(--clayDim)"
-  } : n < 10 ? {
-    color: "var(--amber)",
-    background: "#f3e6c8"
-  } : {
-    color: "var(--sage)",
-    background: "var(--sageDim)"
-  })
-});
+// Available: red when nothing's left to sell, amber when low, green otherwise
+const whAvailColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
 
 // one WarehouseStock row — memo'd so a click elsewhere (a filter, the
 // refresh countdown) doesn't redraw every row
@@ -4360,10 +4343,12 @@ const WarehouseRow = React.memo(function WarehouseRow({
       color: r.committed ? "var(--amber)" : "var(--muted)"
     }
   }, r.committed), /*#__PURE__*/React.createElement("div", {
-    style: midCell
-  }, /*#__PURE__*/React.createElement("span", {
-    style: whAvailBadge(r.available)
-  }, r.available))) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      fontWeight: 600,
+      color: whAvailColor(r.available)
+    }
+  }, r.available)) : /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
       gridColumn: "span 4",
