@@ -4122,7 +4122,8 @@ function Discontinued({
 function Reorder({ doc, setDoc, stickyTop, flash, products }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [view, setView] = useState("below"); // below | restocked | all
+  const [table, setTable] = useState("reorder"); // reorder | ceramitec | items | composites
+  const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
@@ -4207,10 +4208,8 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
     return list;
   }, [rows, q, vendor, view, sortBy, sortDir]);
 
-  // vendor picked no longer has rows in this view — fall back to all (not for
-  // the Ceramitec view, which isn't Zoho rows — keep the vendor for coming back)
+  // vendor picked no longer has rows in this view — fall back to all
   useEffect(() => {
-    if (view === "ceramitec") return;
     if (vendor !== "all" && !vendors.some(([v]) => v === vendor))
       setVendor("all");
   }, [vendors]);
@@ -4228,6 +4227,35 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
       ),
     [products, q],
   );
+
+  // stock per warehouse (see fetchWarehouseStock in lib/zohoReorder.js).
+  // Items are cut down to SKUs that are live on Shopify (active in the
+  // catalog); composites are every active one in Zoho.
+  const ws = doc.warehouseStock;
+  const shopifySkus = useMemo(
+    () =>
+      new Set(
+        (products || [])
+          .filter((p) => p.active !== false && p.sku)
+          .map((p) => normSku(p.sku)),
+      ),
+    [products],
+  );
+  const whItems = useMemo(
+    () => (ws ? ws.items.filter((r) => shopifySkus.has(normSku(r.sku))) : []),
+    [ws, shopifySkus],
+  );
+  // Zoho's numbers for the Ceramitec sets, by SKU — most are composites, so
+  // those win over a plain item with the same SKU
+  const zohoBySku = useMemo(() => {
+    const m = new Map();
+    if (ws)
+      for (const r of [...ws.composites, ...ws.items]) {
+        const k = normSku(r.sku);
+        if (k && !m.has(k)) m.set(k, whTotals(r, ws.warehouses));
+      }
+    return m;
+  }, [ws]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -4294,7 +4322,9 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
     }
   };
 
-  const header = (
+  // sticky header: which table, then search/vendor/refresh, then that
+  // table's own filters (passed in — the warehouse tables bring their own)
+  const headerWith = (filters) => (
     <div
       style={{
         position: "sticky",
@@ -4305,6 +4335,18 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
         paddingBottom: 10,
       }}
     >
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {[
+          ["reorder", `Reorder list (${counts.below})`],
+          ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`],
+          ["items", `Items by warehouse${ws ? ` (${whItems.length})` : ""}`],
+          ["composites", `Composite items${ws ? ` (${ws.composites.length})` : ""}`],
+        ].map(([k, label]) => (
+          <button key={k} onClick={() => setTable(k)} style={tableTab(table === k)}>
+            {label}
+          </button>
+        ))}
+      </div>
       <div
         style={{
           display: "flex",
@@ -4316,9 +4358,10 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search name, SKU or notes…"
+          placeholder={table === "reorder" ? "Search name, SKU or notes…" : "Search name or SKU…"}
           style={{ ...search, minWidth: 220 }}
         />
+        {table === "reorder" && (
         <select
           value={vendor}
           onChange={(e) => setVendor(e.target.value)}
@@ -4331,6 +4374,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
             </option>
           ))}
         </select>
+        )}
         <button
           onClick={refresh}
           disabled={refreshing || coolingDown}
@@ -4354,32 +4398,53 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
                 : "Refresh from Zoho"}
         </button>
       </div>
-      <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-        {[
-          ["below", `Below reorder level (${counts.below})`],
-          ["short", `Needs ordering (${counts.short})`],
-          ["restocked", `Restocked (${counts.restocked})`],
-          ["all", `All (${counts.all})`],
-          ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`],
-        ].map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => setView(k)}
-            style={{ ...catPill(view === k), textTransform: "none" }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {filters && (
+        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+          {filters}
+        </div>
+      )}
     </div>
   );
+  const header = headerWith(
+    [
+      ["below", `Below reorder level (${counts.below})`],
+      ["short", `Needs ordering (${counts.short})`],
+      ["restocked", `Restocked (${counts.restocked})`],
+      ["all", `All (${counts.all})`],
+    ].map(([k, label]) => (
+      <button
+        key={k}
+        onClick={() => setView(k)}
+        style={{ ...catPill(view === k), textTransform: "none" }}
+      >
+        {label}
+      </button>
+    )),
+  );
 
-  if (view === "ceramitec")
+  if (table === "ceramitec")
     return (
       <div>
-        {header}
-        <CeramitecBundles rows={ceramitec} manual={doc.manual} onSave={saveManual} />
+        {headerWith(null)}
+        <CeramitecBundles
+          rows={ceramitec}
+          manual={doc.manual}
+          onSave={saveManual}
+          zoho={ws ? zohoBySku : null}
+        />
       </div>
+    );
+
+  if (table === "items" || table === "composites")
+    return (
+      <WarehouseStock
+        key={table}
+        ws={ws}
+        rows={table === "items" ? whItems : ws ? ws.composites : []}
+        q={q}
+        kind={table}
+        headerWith={headerWith}
+      />
     );
 
   if (!doc.lastSyncAt)
@@ -4618,7 +4683,7 @@ function ExpectedDateCell({ value, onChange }) {
 // Ceramitec's pre-packed sets — single Shopify products, not Zoho items.
 // Stock on hand is Shopify's (via the Shopify sync); to be received, expected
 // date and notes are typed in here (doc.manual, keyed by SKU).
-function CeramitecBundles({ rows, manual, onSave }) {
+function CeramitecBundles({ rows, manual, onSave, zoho }) {
   return (
     <div>
       <div
@@ -4629,7 +4694,7 @@ function CeramitecBundles({ rows, manual, onSave }) {
           overflowX: "auto",
         }}
       >
-        <div style={{ minWidth: 820 }}>
+        <div style={{ minWidth: 940 }}>
           <div
             style={{
               ...ceramitecGrid,
@@ -4643,7 +4708,8 @@ function CeramitecBundles({ rows, manual, onSave }) {
             }}
           >
             <div>Name</div>
-            <div style={{ textAlign: "center" }}>Stock on hand</div>
+            <div style={{ textAlign: "center" }}>Shopify stock</div>
+            <div style={{ textAlign: "center" }} title="Available in Zoho (on hand − committed)">Zoho available</div>
             <div style={{ textAlign: "center" }}>To be received</div>
             <div>Expected by</div>
             <div>Notes</div>
@@ -4687,6 +4753,7 @@ function CeramitecBundles({ rows, manual, onSave }) {
                 >
                   {!p ? "—" : p.stockTracked ? p.stock || 0 : "not tracked"}
                 </div>
+                <ZohoStockCell z={zoho && zoho.get(normSku(sku))} hasZoho={!!zoho} p={p} />
                 <div style={{ display: "flex", justifyContent: "center" }}>
                   <QtyCell value={m.toReceive} onSave={(v) => onSave(sku, { toReceive: v })} />
                 </div>
@@ -4701,10 +4768,263 @@ function CeramitecBundles({ rows, manual, onSave }) {
         </div>
       </div>
       <p style={{ ...note, marginTop: 10 }}>
-        Pre-packed Ceramitec sets, sold as single products on Shopify. Stock on
-        hand is what's entered on Shopify (updated on every Shopify sync); to be
-        received, dates and notes are filled in here.
+        Pre-packed Ceramitec sets, sold as single products on Shopify. Shopify
+        stock is what's entered on Shopify (updated on every Shopify sync); Zoho
+        available is on hand − committed in Zoho, flagged when the two
+        disagree. To be received, dates and notes are filled in here.
       </p>
+    </div>
+  );
+}
+
+// one warehouse-stock row's totals (see fetchWarehouseStock). On hand is
+// Zoho's total; rows stored before `total` was added → just the warehouses.
+function whTotals(r, whs) {
+  let inWarehouses = 0, committed = 0;
+  for (const w of whs) {
+    const [h, c] = r.byWarehouse[w.id] || [0, 0];
+    inWarehouses += h;
+    committed += c;
+  }
+  const onHand = r.total == null ? inWarehouses : r.total;
+  return { onHand, transit: onHand - inWarehouses, committed, available: onHand - committed };
+}
+
+// Zoho stock split by warehouse — on hand and committed per warehouse, then
+// totals matching Zoho's "Accounting Stock" box. On hand is Zoho's total,
+// which also counts stock on a transfer that's left one warehouse and not
+// arrived at the other — shown as "in transit".
+function WarehouseStock({ ws, rows, q, kind, headerWith }) {
+  const [filter, setFilter] = useState("all"); // all | oos | committed | transit
+  const [sortBy, setSortBy] = useState("name"); // name | transit | onHand | committed | available
+  const [sortDir, setSortDir] = useState("asc");
+  const whs = ws ? ws.warehouses : [];
+
+  const withTotals = useMemo(
+    () => rows.map((r) => ({ ...r, ...whTotals(r, whs) })),
+    [rows, whs],
+  );
+  // out of stock = nothing left to sell (committed can eat what's on hand)
+  const isOos = (r) => r.tracked && r.available <= 0;
+  const counts = useMemo(
+    () => ({
+      all: withTotals.length,
+      oos: withTotals.filter(isOos).length,
+      committed: withTotals.filter((r) => r.committed > 0).length,
+      transit: withTotals.filter((r) => r.transit !== 0).length,
+    }),
+    [withTotals],
+  );
+  const shown = useMemo(() => {
+    const keep = {
+      all: () => true,
+      oos: isOos,
+      committed: (r) => r.committed > 0,
+      transit: (r) => r.transit !== 0,
+    }[filter];
+    const list = withTotals.filter(
+      (r) => keep(r) && matchText(q, `${r.name} ${r.sku}`),
+    );
+    const dir = sortDir === "asc" ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    list.sort((a, b) =>
+      sortBy === "name"
+        ? dir * byName(a, b)
+        : dir * (a[sortBy] - b[sortBy]) || byName(a, b),
+    );
+    return list;
+  }, [withTotals, filter, q, sortBy, sortDir]);
+
+  if (!ws)
+    return (
+      <div>
+        {headerWith(null)}
+        <div
+          style={{
+            textAlign: "center",
+            padding: "60px 20px",
+            background: "var(--card)",
+            border: "1px solid var(--line)",
+            borderRadius: 14,
+            color: "var(--muted)",
+            lineHeight: 1.5,
+          }}
+        >
+          Not pulled yet — it comes in with the next <b>Refresh from Zoho</b>.
+        </div>
+      </div>
+    );
+
+  const toggleSort = (col) => {
+    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortBy(col);
+      setSortDir(col === "name" ? "asc" : "desc");
+    }
+  };
+  // the name stays put while the numbers scroll sideways (phones)
+  const stickyName = {
+    position: "sticky",
+    left: 0,
+    zIndex: 1,
+    background: "var(--card)",
+    marginLeft: -16,
+    paddingLeft: 16,
+    minWidth: 0,
+  };
+  const th = (label, col) => (
+    <div
+      onClick={() => toggleSort(col)}
+      style={{
+        ...(col === "name" ? stickyName : null),
+        textAlign: col === "name" ? "left" : "center",
+        cursor: "pointer",
+        userSelect: "none",
+      }}
+    >
+      {label}
+      {sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+    </div>
+  );
+  const grid = {
+    display: "grid",
+    gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
+    gap: 12,
+  };
+  const stockColor = (n) =>
+    n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
+
+  return (
+    <div>
+      {headerWith(
+        [
+          ["all", `All (${counts.all})`],
+          ["oos", `Out of stock (${counts.oos})`],
+          ["committed", `Has committed (${counts.committed})`],
+          ["transit", `In transit (${counts.transit})`],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setFilter(k)}
+            title={k === "oos" ? "Nothing available to sell — on hand minus committed is 0 or less" : undefined}
+            style={{ ...catPill(filter === k), textTransform: "none" }}
+          >
+            {label}
+          </button>
+        )),
+      )}
+      <div
+        style={{
+          background: "var(--card)",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          overflowX: "auto",
+        }}
+      >
+        <div style={{ minWidth: 620 + whs.length * 104 }}>
+          <div
+            style={{
+              ...grid,
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              color: "var(--muted)",
+            }}
+          >
+            {th("Name", "name")}
+            {whs.map((w) => (
+              <div key={w.id} style={{ textAlign: "center" }} title="On hand, with committed under it">
+                {w.name}
+              </div>
+            ))}
+            {th("In transit", "transit")}
+            {th("On hand", "onHand")}
+            {th("Committed", "committed")}
+            {th("Available", "available")}
+          </div>
+          {!shown.length && (
+            <div style={{ padding: "30px 16px", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
+              No items match.
+            </div>
+          )}
+          {shown.map((r) => (
+            <div
+              key={r.id}
+              style={{
+                ...grid,
+                padding: "10px 16px",
+                borderBottom: "1px solid var(--line)",
+                alignItems: "center",
+                fontSize: 14,
+              }}
+            >
+              <div style={stickyName}>
+                <div style={{ fontWeight: 600 }}>{r.name}</div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.sku || "No SKU"}</div>
+              </div>
+              {whs.map((w) => {
+                const [h, c] = r.byWarehouse[w.id] || [0, 0];
+                return (
+                  <div key={w.id} style={midCell}>
+                    <div style={{ color: h ? "var(--ink)" : "var(--muted)" }}>{h}</div>
+                    {c !== 0 && (
+                      <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{c} committed</div>
+                    )}
+                  </div>
+                );
+              })}
+              {r.tracked ? (
+                <>
+                  <div style={{ ...midCell, color: r.transit ? "var(--ink)" : "var(--muted)" }}>{r.transit}</div>
+                  <div style={{ ...midCell, fontWeight: 600, color: stockColor(r.onHand) }}>{r.onHand}</div>
+                  <div style={{ ...midCell, color: r.committed ? "var(--ink)" : "var(--muted)" }}>{r.committed}</div>
+                  <div style={{ ...midCell, fontWeight: 600, color: stockColor(r.available) }}>{r.available}</div>
+                </>
+              ) : (
+                <div style={{ ...midCell, gridColumn: "span 4", color: "var(--muted)" }}>not tracked</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+      <p style={{ ...note, marginTop: 10 }}>
+        {kind === "items"
+          ? "Zoho items whose SKU is live on Shopify (active in this catalog). "
+          : "Every active composite item in Zoho. "}
+        Each warehouse shows stock on hand, with committed (on sales orders,
+        not shipped yet) under it. In transit is on a transfer between
+        warehouses, not received yet. On hand, committed and available match
+        Zoho's Accounting Stock, leaving out inactive warehouses (Studio,
+        Design Office). Out of stock = nothing available. Updated with every Zoho
+        refresh{ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : ""}.
+      </p>
+    </div>
+  );
+}
+
+// a Ceramitec set's Zoho number, flagged when it doesn't match Shopify's
+function ZohoStockCell({ z, hasZoho, p }) {
+  if (!z)
+    return (
+      <div style={{ ...midCell, color: "var(--muted)" }}>
+        {hasZoho ? "not in Zoho" : "—"}
+      </div>
+    );
+  const differs = p && p.stockTracked && (p.stock || 0) !== z.available;
+  return (
+    <div
+      style={midCell}
+      title={`Zoho: ${z.onHand} on hand · ${z.committed} committed`}
+    >
+      <div style={{ fontWeight: 600, color: differs ? "var(--amber)" : "var(--ink)" }}>
+        {z.available}
+      </div>
+      {differs && (
+        <div style={{ fontSize: 11.5, color: "var(--amber)" }}>≠ Shopify</div>
+      )}
     </div>
   );
 }
@@ -4975,6 +5295,18 @@ const btnPri = {
   cursor: "pointer",
   whiteSpace: "nowrap",
 };
+// Zoho Inventory's table switcher (Reorder list / Ceramitec / …) — bolder
+// than catPill so it doesn't read as one more filter
+const tableTab = (on) => ({
+  padding: "7px 14px",
+  borderRadius: 9,
+  fontSize: 13.5,
+  fontWeight: 600,
+  cursor: "pointer",
+  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
+  background: on ? "var(--ink)" : "#fff",
+  color: on ? "#fff" : "var(--ink)",
+});
 const catPill = (on) => ({
   padding: "4px 11px",
   borderRadius: 999,
@@ -5075,10 +5407,10 @@ const reorderGrid = (showVendor) => ({
   gap: 12,
 });
 const midCell = { textAlign: "center", fontSize: 14 };
-// name · stock on hand · to be received · expected · notes
+// name · Shopify stock · Zoho available · to be received · expected · notes
 const ceramitecGrid = {
   display: "grid",
-  gridTemplateColumns: "minmax(260px,2fr) 110px 120px 130px minmax(200px,1.5fr)",
+  gridTemplateColumns: "minmax(260px,2fr) 110px 110px 120px 130px minmax(200px,1.5fr)",
   gap: 12,
 };
 // Ceramitec sets that arrive pre-packed — shown under "Ceramitec bundles" on

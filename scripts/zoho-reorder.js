@@ -22,6 +22,11 @@ const apply = process.argv.includes("--apply");
 const r = redis();
 const fresh = await fetchZohoReorder();
 console.log(`Zoho: ${fresh.items.length} tracked items with a reorder level, ${fresh.poCount} open POs`);
+console.log(
+  fresh.warehouseStock
+    ? `Warehouse stock: ${fresh.warehouseStock.items.length} items + ${fresh.warehouseStock.composites.length} composites across ${fresh.warehouseStock.warehouses.map((w) => w.name).join(", ")}`
+    : `Warehouse stock: not refreshed — ${fresh.warehouseError}`
+);
 
 // read right before merging so the write doesn't drop notes saved meanwhile
 const prev = (await r.get(REORDER_KEY)) || EMPTY_REORDER;

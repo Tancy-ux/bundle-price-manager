@@ -24,6 +24,9 @@ import {
   REFRESH_COOLDOWN_MS,
 } from "../lib/zohoReorder.js";
 
+// a full refresh (reorder list + stock per warehouse) takes ~30s
+export const config = { maxDuration: 60 };
+
 let _redis;
 function getRedis() {
   if (!_redis) {

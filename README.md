@@ -282,6 +282,14 @@ same list as Zoho's *Vendor → Order Now* screen.
 - Stored under its own Redis key `bundle-manager:reorder` (locally
   `data/reorder.json`), never mixed into the catalog document.
 
+**Items by warehouse / Composite items:** two more views in the same tab, with
+stock on hand and committed per active Zoho warehouse, in transit (on a
+transfer, not received yet), then on hand / committed / available matching
+Zoho's **Accounting Stock** box — minus the few leftover units sitting in
+inactive warehouses (Studio, Design Office), which are left out. Items is cut
+down to SKUs active in this catalog (i.e. live on Shopify); Composite items is
+every active composite in Zoho. Both are pulled with the same refresh.
+
 **Sharing it with the team:** `/inventory` is a page with only this table —
 no other tabs, same dates/notes/Refresh as the main tab. It's behind
 the same site login as the main app, so it hides the rest of the app but
@@ -291,7 +299,9 @@ Needs, in `.env`, the Vercel project's Environment Variables, and the GitHub
 repository secrets: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`,
 `ZOHO_REFRESH_TOKEN`, `ZOHO_ORG_ID` (a Zoho **Self Client** at
 api-console.zoho.in with read-only scopes
-`ZohoInventory.items.READ,ZohoInventory.purchaseorders.READ,ZohoInventory.contacts.READ`).
+`ZohoInventory.items.READ,ZohoInventory.purchaseorders.READ,ZohoInventory.contacts.READ,ZohoInventory.compositeitems.READ,ZohoInventory.settings.READ`).
+Without the compositeitems scope the reorder list still refreshes; only the
+warehouse views don't.
 
 ## Later: connecting to Shopify
 

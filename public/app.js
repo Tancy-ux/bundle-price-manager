@@ -3510,7 +3510,8 @@ function Reorder({
 }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [view, setView] = useState("below"); // below | restocked | all
+  const [table, setTable] = useState("reorder"); // reorder | ceramitec | items | composites
+  const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
@@ -3567,10 +3568,8 @@ function Reorder({
     return list;
   }, [rows, q, vendor, view, sortBy, sortDir]);
 
-  // vendor picked no longer has rows in this view — fall back to all (not for
-  // the Ceramitec view, which isn't Zoho rows — keep the vendor for coming back)
+  // vendor picked no longer has rows in this view — fall back to all
   useEffect(() => {
-    if (view === "ceramitec") return;
     if (vendor !== "all" && !vendors.some(([v]) => v === vendor)) setVendor("all");
   }, [vendors]);
 
@@ -3584,6 +3583,23 @@ function Reorder({
     sku,
     p
   }) => matchText(q, `${p ? p.name : ""} ${sku}`)), [products, q]);
+
+  // stock per warehouse (see fetchWarehouseStock in lib/zohoReorder.js).
+  // Items are cut down to SKUs that are live on Shopify (active in the
+  // catalog); composites are every active one in Zoho.
+  const ws = doc.warehouseStock;
+  const shopifySkus = useMemo(() => new Set((products || []).filter(p => p.active !== false && p.sku).map(p => normSku(p.sku))), [products]);
+  const whItems = useMemo(() => ws ? ws.items.filter(r => shopifySkus.has(normSku(r.sku))) : [], [ws, shopifySkus]);
+  // Zoho's numbers for the Ceramitec sets, by SKU — most are composites, so
+  // those win over a plain item with the same SKU
+  const zohoBySku = useMemo(() => {
+    const m = new Map();
+    if (ws) for (const r of [...ws.composites, ...ws.items]) {
+      const k = normSku(r.sku);
+      if (k && !m.has(k)) m.set(k, whTotals(r, ws.warehouses));
+    }
+    return m;
+  }, [ws]);
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -3679,7 +3695,10 @@ function Reorder({
       flash("Couldn't save — check your connection and try again");
     }
   };
-  const header = /*#__PURE__*/React.createElement("div", {
+
+  // sticky header: which table, then search/vendor/refresh, then that
+  // table's own filters (passed in — the warehouse tables bring their own)
+  const headerWith = filters => /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
       top: stickyTop || 0,
@@ -3691,6 +3710,17 @@ function Reorder({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
+      gap: 6,
+      marginBottom: 10,
+      flexWrap: "wrap"
+    }
+  }, [["reorder", `Reorder list (${counts.below})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`], ["items", `Items by warehouse${ws ? ` (${whItems.length})` : ""}`], ["composites", `Composite items${ws ? ` (${ws.composites.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setTable(k),
+    style: tableTab(table === k)
+  }, label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
       gap: 10,
       flexWrap: "wrap",
       alignItems: "center"
@@ -3698,12 +3728,12 @@ function Reorder({
   }, /*#__PURE__*/React.createElement("input", {
     value: q,
     onChange: e => setQ(e.target.value),
-    placeholder: "Search name, SKU or notes…",
+    placeholder: table === "reorder" ? "Search name, SKU or notes…" : "Search name or SKU…",
     style: {
       ...search,
       minWidth: 220
     }
-  }), /*#__PURE__*/React.createElement("select", {
+  }), table === "reorder" && /*#__PURE__*/React.createElement("select", {
     value: vendor,
     onChange: e => setVendor(e.target.value),
     style: {
@@ -3725,26 +3755,36 @@ function Reorder({
       opacity: refreshing || coolingDown ? 0.55 : 1,
       cursor: refreshing || coolingDown ? "default" : "pointer"
     }
-  }, refreshing ? "Refreshing…" : coolingDown ? `Updated ${timeAgo(doc.lastSyncAt)} · refresh again in ${fmtLeft(cooldownLeft)}` : doc.lastSyncAt ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}` : "Refresh from Zoho")), /*#__PURE__*/React.createElement("div", {
+  }, refreshing ? "Refreshing…" : coolingDown ? `Updated ${timeAgo(doc.lastSyncAt)} · refresh again in ${fmtLeft(cooldownLeft)}` : doc.lastSyncAt ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}` : "Refresh from Zoho")), filters && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       marginTop: 10,
       flexWrap: "wrap"
     }
-  }, [["below", `Below reorder level (${counts.below})`], ["short", `Needs ordering (${counts.short})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, filters));
+  const header = headerWith([["below", `Below reorder level (${counts.below})`], ["short", `Needs ordering (${counts.short})`], ["restocked", `Restocked (${counts.restocked})`], ["all", `All (${counts.all})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setView(k),
     style: {
       ...catPill(view === k),
       textTransform: "none"
     }
-  }, label))));
-  if (view === "ceramitec") return /*#__PURE__*/React.createElement("div", null, header, /*#__PURE__*/React.createElement(CeramitecBundles, {
+  }, label)));
+  if (table === "ceramitec") return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement(CeramitecBundles, {
     rows: ceramitec,
     manual: doc.manual,
-    onSave: saveManual
+    onSave: saveManual,
+    zoho: ws ? zohoBySku : null
   }));
+  if (table === "items" || table === "composites") return /*#__PURE__*/React.createElement(WarehouseStock, {
+    key: table,
+    ws: ws,
+    rows: table === "items" ? whItems : ws ? ws.composites : [],
+    q: q,
+    kind: table,
+    headerWith: headerWith
+  });
   if (!doc.lastSyncAt) return /*#__PURE__*/React.createElement("div", null, header, /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
@@ -3926,7 +3966,8 @@ function ExpectedDateCell({
 function CeramitecBundles({
   rows,
   manual,
-  onSave
+  onSave,
+  zoho
 }) {
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3937,7 +3978,7 @@ function CeramitecBundles({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: 820
+      minWidth: 940
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3954,7 +3995,12 @@ function CeramitecBundles({
     style: {
       textAlign: "center"
     }
-  }, "Stock on hand"), /*#__PURE__*/React.createElement("div", {
+  }, "Shopify stock"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    },
+    title: "Available in Zoho (on hand − committed)"
+  }, "Zoho available"), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center"
     }
@@ -3999,7 +4045,11 @@ function CeramitecBundles({
         fontWeight: 600,
         color: !p || !p.stockTracked ? "var(--muted)" : (p.stock || 0) <= 0 ? "var(--clay)" : p.stock < 10 ? "var(--amber)" : "var(--sage)"
       }
-    }, !p ? "—" : p.stockTracked ? p.stock || 0 : "not tracked"), /*#__PURE__*/React.createElement("div", {
+    }, !p ? "—" : p.stockTracked ? p.stock || 0 : "not tracked"), /*#__PURE__*/React.createElement(ZohoStockCell, {
+      z: zoho && zoho.get(normSku(sku)),
+      hasZoho: !!zoho,
+      p: p
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "center"
@@ -4025,7 +4075,251 @@ function CeramitecBundles({
       ...note,
       marginTop: 10
     }
-  }, "Pre-packed Ceramitec sets, sold as single products on Shopify. Stock on hand is what's entered on Shopify (updated on every Shopify sync); to be received, dates and notes are filled in here."));
+  }, "Pre-packed Ceramitec sets, sold as single products on Shopify. Shopify stock is what's entered on Shopify (updated on every Shopify sync); Zoho available is on hand − committed in Zoho, flagged when the two disagree. To be received, dates and notes are filled in here."));
+}
+
+// one warehouse-stock row's totals (see fetchWarehouseStock). On hand is
+// Zoho's total; rows stored before `total` was added → just the warehouses.
+function whTotals(r, whs) {
+  let inWarehouses = 0,
+    committed = 0;
+  for (const w of whs) {
+    const [h, c] = r.byWarehouse[w.id] || [0, 0];
+    inWarehouses += h;
+    committed += c;
+  }
+  const onHand = r.total == null ? inWarehouses : r.total;
+  return {
+    onHand,
+    transit: onHand - inWarehouses,
+    committed,
+    available: onHand - committed
+  };
+}
+
+// Zoho stock split by warehouse — on hand and committed per warehouse, then
+// totals matching Zoho's "Accounting Stock" box. On hand is Zoho's total,
+// which also counts stock on a transfer that's left one warehouse and not
+// arrived at the other — shown as "in transit".
+function WarehouseStock({
+  ws,
+  rows,
+  q,
+  kind,
+  headerWith
+}) {
+  const [filter, setFilter] = useState("all"); // all | oos | committed | transit
+  const [sortBy, setSortBy] = useState("name"); // name | transit | onHand | committed | available
+  const [sortDir, setSortDir] = useState("asc");
+  const whs = ws ? ws.warehouses : [];
+  const withTotals = useMemo(() => rows.map(r => ({
+    ...r,
+    ...whTotals(r, whs)
+  })), [rows, whs]);
+  // out of stock = nothing left to sell (committed can eat what's on hand)
+  const isOos = r => r.tracked && r.available <= 0;
+  const counts = useMemo(() => ({
+    all: withTotals.length,
+    oos: withTotals.filter(isOos).length,
+    committed: withTotals.filter(r => r.committed > 0).length,
+    transit: withTotals.filter(r => r.transit !== 0).length
+  }), [withTotals]);
+  const shown = useMemo(() => {
+    const keep = {
+      all: () => true,
+      oos: isOos,
+      committed: r => r.committed > 0,
+      transit: r => r.transit !== 0
+    }[filter];
+    const list = withTotals.filter(r => keep(r) && matchText(q, `${r.name} ${r.sku}`));
+    const dir = sortDir === "asc" ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    list.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (a[sortBy] - b[sortBy]) || byName(a, b));
+    return list;
+  }, [withTotals, filter, q, sortBy, sortDir]);
+  if (!ws) return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "60px 20px",
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 14,
+      color: "var(--muted)",
+      lineHeight: 1.5
+    }
+  }, "Not pulled yet — it comes in with the next ", /*#__PURE__*/React.createElement("b", null, "Refresh from Zoho"), "."));
+  const toggleSort = col => {
+    if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc");else {
+      setSortBy(col);
+      setSortDir(col === "name" ? "asc" : "desc");
+    }
+  };
+  // the name stays put while the numbers scroll sideways (phones)
+  const stickyName = {
+    position: "sticky",
+    left: 0,
+    zIndex: 1,
+    background: "var(--card)",
+    marginLeft: -16,
+    paddingLeft: 16,
+    minWidth: 0
+  };
+  const th = (label, col) => /*#__PURE__*/React.createElement("div", {
+    onClick: () => toggleSort(col),
+    style: {
+      ...(col === "name" ? stickyName : null),
+      textAlign: col === "name" ? "left" : "center",
+      cursor: "pointer",
+      userSelect: "none"
+    }
+  }, label, sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "");
+  const grid = {
+    display: "grid",
+    gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
+    gap: 12
+  };
+  const stockColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "var(--sage)";
+  return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setFilter(k),
+    title: k === "oos" ? "Nothing available to sell — on hand minus committed is 0 or less" : undefined,
+    style: {
+      ...catPill(filter === k),
+      textTransform: "none"
+    }
+  }, label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 620 + whs.length * 104
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...grid,
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--line)",
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+      color: "var(--muted)"
+    }
+  }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement("div", {
+    key: w.id,
+    style: {
+      textAlign: "center"
+    },
+    title: "On hand, with committed under it"
+  }, w.name)), th("In transit", "transit"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "30px 16px",
+      textAlign: "center",
+      color: "var(--muted)",
+      fontSize: 14
+    }
+  }, "No items match."), shown.map(r => /*#__PURE__*/React.createElement("div", {
+    key: r.id,
+    style: {
+      ...grid,
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--line)",
+      alignItems: "center",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: stickyName
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600
+    }
+  }, r.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, r.sku || "No SKU")), whs.map(w => {
+    const [h, c] = r.byWarehouse[w.id] || [0, 0];
+    return /*#__PURE__*/React.createElement("div", {
+      key: w.id,
+      style: midCell
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: h ? "var(--ink)" : "var(--muted)"
+      }
+    }, h), c !== 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--muted)"
+      }
+    }, c, " committed"));
+  }), r.tracked ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      color: r.transit ? "var(--ink)" : "var(--muted)"
+    }
+  }, r.transit), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      fontWeight: 600,
+      color: stockColor(r.onHand)
+    }
+  }, r.onHand), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      color: r.committed ? "var(--ink)" : "var(--muted)"
+    }
+  }, r.committed), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      fontWeight: 600,
+      color: stockColor(r.available)
+    }
+  }, r.available)) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      gridColumn: "span 4",
+      color: "var(--muted)"
+    }
+  }, "not tracked"))))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      ...note,
+      marginTop: 10
+    }
+  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog). " : "Every active composite item in Zoho. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."));
+}
+
+// a Ceramitec set's Zoho number, flagged when it doesn't match Shopify's
+function ZohoStockCell({
+  z,
+  hasZoho,
+  p
+}) {
+  if (!z) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...midCell,
+      color: "var(--muted)"
+    }
+  }, hasZoho ? "not in Zoho" : "—");
+  const differs = p && p.stockTracked && (p.stock || 0) !== z.available;
+  return /*#__PURE__*/React.createElement("div", {
+    style: midCell,
+    title: `Zoho: ${z.onHand} on hand · ${z.committed} committed`
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      color: differs ? "var(--amber)" : "var(--ink)"
+    }
+  }, z.available), differs && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--amber)"
+    }
+  }, "≠ Shopify"));
 }
 
 // hand-typed quantity (e.g. Ceramitec "to be received") — reads as a number,
@@ -4272,6 +4566,18 @@ const btnPri = {
   cursor: "pointer",
   whiteSpace: "nowrap"
 };
+// Zoho Inventory's table switcher (Reorder list / Ceramitec / …) — bolder
+// than catPill so it doesn't read as one more filter
+const tableTab = on => ({
+  padding: "7px 14px",
+  borderRadius: 9,
+  fontSize: 13.5,
+  fontWeight: 600,
+  cursor: "pointer",
+  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
+  background: on ? "var(--ink)" : "#fff",
+  color: on ? "#fff" : "var(--ink)"
+});
 const catPill = on => ({
   padding: "4px 11px",
   borderRadius: 999,
@@ -4383,10 +4689,10 @@ const midCell = {
   textAlign: "center",
   fontSize: 14
 };
-// name · stock on hand · to be received · expected · notes
+// name · Shopify stock · Zoho available · to be received · expected · notes
 const ceramitecGrid = {
   display: "grid",
-  gridTemplateColumns: "minmax(260px,2fr) 110px 120px 130px minmax(200px,1.5fr)",
+  gridTemplateColumns: "minmax(260px,2fr) 110px 110px 120px 130px minmax(200px,1.5fr)",
   gap: 12
 };
 // Ceramitec sets that arrive pre-packed — shown under "Ceramitec bundles" on
