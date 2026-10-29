@@ -4128,7 +4128,7 @@ function Discontinued({
 function Reorder({ doc, setDoc, stickyTop, flash, products }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [table, setTable] = useState("reorder"); // reorder | ceramitec | items | composites
+  const [table, setTable] = useState("items"); // items | composites | marble | reorder | ceramitec
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
@@ -4350,11 +4350,11 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
     >
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         {[
-          ["reorder", `Reorder list (${counts.below})`],
-          ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`],
           ["items", `Items by warehouse${ws ? ` (${whTables.items.length})` : ""}`],
           ["composites", `Composite items${ws ? ` (${whTables.composites.length})` : ""}`],
           ["marble", `Marble Atelier${ws ? ` (${whTables.marble.length})` : ""}`],
+          ["reorder", `Reorder list (${counts.below})`],
+          ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`],
         ].map(([k, label]) => (
           <button key={k} onClick={() => setTable(k)} style={tableTab(table === k)}>
             {label}
@@ -4810,7 +4810,7 @@ function whTotals(r, whs) {
 // arrived at the other — shown as "in transit".
 function WarehouseStock({ ws, rows, q, kind, headerWith }) {
   const [filter, setFilter] = useState("all"); // all | oos | committed | transit
-  const [sortBy, setSortBy] = useState("name"); // name | transit | onHand | committed | available
+  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | onHand | committed | available
   const [sortDir, setSortDir] = useState("asc");
   const whs = ws ? ws.warehouses : [];
   // typing in search stays snappy — the table catches up a beat later
@@ -4867,10 +4867,14 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
     );
     const dir = sortDir === "asc" ? 1 : -1;
     const byName = (a, b) => a.name.localeCompare(b.name);
+    // "wh:<id>" sorts by that warehouse's on hand
+    const val = sortBy.startsWith("wh:")
+      ? (r) => (r.byWarehouse[sortBy.slice(3)] || [0])[0]
+      : (r) => r[sortBy];
     list.sort((a, b) =>
       sortBy === "name"
         ? dir * byName(a, b)
-        : dir * (a[sortBy] - b[sortBy]) || byName(a, b),
+        : dir * (val(a) - val(b)) || byName(a, b),
     );
     return list;
   }, [withTotals, filter, dq, sortBy, sortDir]);
@@ -4902,9 +4906,10 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
       setSortDir(col === "name" ? "asc" : "desc");
     }
   };
-  const th = (label, col) => (
+  const th = (label, col, title) => (
     <div
       onClick={() => toggleSort(col)}
+      title={title || (col === "name" ? "Sort A–Z" : "Click to sort — highest first, again for lowest")}
       style={{
         ...(col === "name" ? whStickyName : null),
         textAlign: col === "name" ? "left" : "center",
@@ -4913,7 +4918,11 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
       }}
     >
       {label}
-      {sortBy === col ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+      {sortBy === col ? (
+        sortDir === "asc" ? " ▲" : " ▼"
+      ) : (
+        <span style={{ opacity: 0.4 }}> ↕</span>
+      )}
     </div>
   );
   return (
@@ -4958,9 +4967,9 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
           >
             {th("Name", "name")}
             {whs.map((w) => (
-              <div key={w.id} style={{ textAlign: "center" }} title="On hand, with committed under it">
-                {w.name}
-              </div>
+              <React.Fragment key={w.id}>
+                {th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort")}
+              </React.Fragment>
             ))}
             {th("In transit", "transit")}
             {th("On hand", "onHand")}

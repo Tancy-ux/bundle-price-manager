@@ -3516,7 +3516,7 @@ function Reorder({
 }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [table, setTable] = useState("reorder"); // reorder | ceramitec | items | composites
+  const [table, setTable] = useState("items"); // items | composites | marble | reorder | ceramitec
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
@@ -3731,7 +3731,7 @@ function Reorder({
       marginBottom: 10,
       flexWrap: "wrap"
     }
-  }, [["reorder", `Reorder list (${counts.below})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`], ["items", `Items by warehouse${ws ? ` (${whTables.items.length})` : ""}`], ["composites", `Composite items${ws ? ` (${whTables.composites.length})` : ""}`], ["marble", `Marble Atelier${ws ? ` (${whTables.marble.length})` : ""}`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  }, [["items", `Items by warehouse${ws ? ` (${whTables.items.length})` : ""}`], ["composites", `Composite items${ws ? ` (${whTables.composites.length})` : ""}`], ["marble", `Marble Atelier${ws ? ` (${whTables.marble.length})` : ""}`], ["reorder", `Reorder list (${counts.below})`], ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setTable(k),
     style: tableTab(table === k)
@@ -4126,7 +4126,7 @@ function WarehouseStock({
   headerWith
 }) {
   const [filter, setFilter] = useState("all"); // all | oos | committed | transit
-  const [sortBy, setSortBy] = useState("name"); // name | transit | onHand | committed | available
+  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | onHand | committed | available
   const [sortDir, setSortDir] = useState("asc");
   const whs = ws ? ws.warehouses : [];
   // typing in search stays snappy — the table catches up a beat later
@@ -4175,7 +4175,9 @@ function WarehouseStock({
     const list = withTotals.filter(r => keep(r) && matchText(dq, `${r.name} ${r.sku}`));
     const dir = sortDir === "asc" ? 1 : -1;
     const byName = (a, b) => a.name.localeCompare(b.name);
-    list.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (a[sortBy] - b[sortBy]) || byName(a, b));
+    // "wh:<id>" sorts by that warehouse's on hand
+    const val = sortBy.startsWith("wh:") ? r => (r.byWarehouse[sortBy.slice(3)] || [0])[0] : r => r[sortBy];
+    list.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (val(a) - val(b)) || byName(a, b));
     return list;
   }, [withTotals, filter, dq, sortBy, sortDir]);
   if (!ws) return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement("div", {
@@ -4195,15 +4197,20 @@ function WarehouseStock({
       setSortDir(col === "name" ? "asc" : "desc");
     }
   };
-  const th = (label, col) => /*#__PURE__*/React.createElement("div", {
+  const th = (label, col, title) => /*#__PURE__*/React.createElement("div", {
     onClick: () => toggleSort(col),
+    title: title || (col === "name" ? "Sort A–Z" : "Click to sort — highest first, again for lowest"),
     style: {
       ...(col === "name" ? whStickyName : null),
       textAlign: col === "name" ? "left" : "center",
       cursor: "pointer",
       userSelect: "none"
     }
-  }, label, sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : "");
+  }, label, sortBy === col ? sortDir === "asc" ? " ▲" : " ▼" : /*#__PURE__*/React.createElement("span", {
+    style: {
+      opacity: 0.4
+    }
+  }, " ↕"));
   return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setFilter(k),
@@ -4234,13 +4241,9 @@ function WarehouseStock({
       textTransform: "uppercase",
       color: "var(--muted)"
     }
-  }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement("div", {
-    key: w.id,
-    style: {
-      textAlign: "center"
-    },
-    title: "On hand, with committed under it"
-  }, w.name)), th("In transit", "transit"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
+  }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement(React.Fragment, {
+    key: w.id
+  }, th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort"))), th("In transit", "transit"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "30px 16px",
       textAlign: "center",
