@@ -4133,6 +4133,16 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
+  // the sticky header's height, so the warehouse tables can fill the rest of
+  // the screen (it remounts when the table changes, hence a callback ref)
+  const [hdrH, setHdrH] = useState(0);
+  const hdrRo = useRef(null);
+  const hdrRef = React.useCallback((el) => {
+    if (hdrRo.current) hdrRo.current.disconnect();
+    if (!el || !window.ResizeObserver) return;
+    hdrRo.current = new ResizeObserver(() => setHdrH(el.offsetHeight));
+    hdrRo.current.observe(el);
+  }, []);
   // re-render every 30s so the cooldown countdown ticks and the button
   // re-enables on its own
   const [, setTick] = useState(0);
@@ -4339,6 +4349,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
   // table's own filters (passed in — the warehouse tables bring their own)
   const headerWith = (filters) => (
     <div
+      ref={hdrRef}
       style={{
         position: "sticky",
         top: stickyTop || 0,
@@ -4458,6 +4469,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
         q={q}
         kind={table}
         headerWith={headerWith}
+        topOffset={(stickyTop || 0) + hdrH}
       />
     );
 
@@ -4801,16 +4813,32 @@ function whTotals(r, whs) {
     committed += c;
   }
   const onHand = r.total == null ? inWarehouses : r.total;
-  return { onHand, transit: onHand - inWarehouses, committed, available: onHand - committed };
+  const incoming = r.incoming || 0;
+  const reorderLevel = r.reorderLevel || 0;
+  // same rule as the Reorder list (see shortOf): below = on hand under the
+  // reorder point; still short = what open POs don't cover
+  const below = r.tracked && reorderLevel > 0 && onHand < reorderLevel;
+  return {
+    onHand,
+    transit: onHand - inWarehouses,
+    committed,
+    available: onHand - committed,
+    incoming,
+    below,
+    short: below ? Math.max(0, reorderLevel - onHand - incoming) : 0,
+  };
 }
 
 // Zoho stock split by warehouse — on hand and committed per warehouse, then
 // totals matching Zoho's "Accounting Stock" box. On hand is Zoho's total,
 // which also counts stock on a transfer that's left one warehouse and not
 // arrived at the other — shown as "in transit".
-function WarehouseStock({ ws, rows, q, kind, headerWith }) {
-  const [filter, setFilter] = useState("all"); // all | oos | committed | transit
-  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | onHand | committed | available
+function WarehouseStock({ ws, rows, q, kind, headerWith, topOffset }) {
+  const [filter, setFilter] = useState("all"); // all | oos | below | short | committed | transit
+  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | incoming | onHand | committed | available
+  // the PO opened from an Incoming cell: {id, fromId} (fromId = the row clicked)
+  const [openPo, setOpenPo] = useState(null);
+  const onPo = React.useCallback((id, fromId) => setOpenPo({ id, fromId }), []);
   const [sortDir, setSortDir] = useState("asc");
   const whs = ws ? ws.warehouses : [];
   // typing in search stays snappy — the table catches up a beat later
@@ -4821,12 +4849,13 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
   const [limit, setLimit] = useState(WH_PAGE);
   useEffect(() => setLimit(WH_PAGE), [filter, dq, sortBy, sortDir]);
   const moreRef = useRef(null);
+  const boxRef = useRef(null); // the table's own scroll box
   useEffect(() => {
     const el = moreRef.current;
     if (!el || !window.IntersectionObserver) return;
     const io = new IntersectionObserver((es) => {
       if (es[0].isIntersecting) setLimit((n) => n + WH_PAGE);
-    }, { rootMargin: "400px" });
+    }, { root: boxRef.current, rootMargin: "400px" });
     io.observe(el);
     return () => io.disconnect();
   });
@@ -4834,8 +4863,10 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
   const grid = useMemo(
     () => ({
       display: "grid",
-      gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
-      gap: 12,
+      // … warehouses · in transit · incoming · on hand · committed · available
+      // wide enough for each heading on one line ("WARE INNOVATIONS ↕")
+      gridTemplateColumns: `minmax(200px,2fr) repeat(${whs.length}, minmax(128px,1fr)) 88px 96px 76px 92px 88px`,
+      gap: 10,
     }),
     [whs.length],
   );
@@ -4850,6 +4881,8 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
     () => ({
       all: withTotals.length,
       oos: withTotals.filter(isOos).length,
+      below: withTotals.filter((r) => r.below).length,
+      short: withTotals.filter((r) => r.short > 0).length,
       committed: withTotals.filter((r) => r.committed > 0).length,
       transit: withTotals.filter((r) => r.transit !== 0).length,
     }),
@@ -4859,6 +4892,8 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
     const keep = {
       all: () => true,
       oos: isOos,
+      below: (r) => r.below,
+      short: (r) => r.short > 0,
       committed: (r) => r.committed > 0,
       transit: (r) => r.transit !== 0,
     }[filter];
@@ -4913,6 +4948,7 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
       style={{
         ...(col === "name" ? whStickyName : null),
         textAlign: col === "name" ? "left" : "center",
+        whiteSpace: "nowrap",
         cursor: "pointer",
         userSelect: "none",
       }}
@@ -4931,31 +4967,50 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
         [
           ["all", `All (${counts.all})`],
           ["oos", `Out of stock (${counts.oos})`],
+          ["below", `Below reorder point (${counts.below})`],
+          ["short", `Still short (${counts.short})`],
           ["committed", `Has committed (${counts.committed})`],
           ["transit", `In transit (${counts.transit})`],
         ].map(([k, label]) => (
           <button
             key={k}
             onClick={() => setFilter(k)}
-            title={k === "oos" ? "Nothing available to sell — on hand minus committed is 0 or less" : undefined}
+            title={
+              {
+                oos: "Nothing available to sell — on hand minus committed is 0 or less",
+                below: "On hand is under the item's reorder point in Zoho",
+                short: "Below the reorder point even after what's coming on open POs",
+              }[k]
+            }
             style={{ ...catPill(filter === k), textTransform: "none" }}
           >
             {label}
           </button>
         )),
       )}
+      {/* scrolls on its own, filling the screen under the sticky header, so
+          the column headings stay put and rows scroll from the first one */}
       <div
+        ref={boxRef}
+        className="noScrollbar"
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
           borderRadius: 12,
-          overflowX: "auto",
+          overflow: "auto",
+          maxHeight: `calc(100vh - ${(topOffset || 0) + 16}px)`,
         }}
       >
-        <div style={{ minWidth: 620 + whs.length * 104 }}>
+        {/* = the grid's own minimum (columns + gaps + row padding), so it
+            only scrolls sideways when the screen really is narrower */}
+        <div style={{ minWidth: 200 + 440 + 6 * 10 + 32 + whs.length * 138 }}>
           <div
             style={{
               ...grid,
+              position: "sticky",
+              top: 0,
+              zIndex: 2,
+              background: "var(--card)",
               padding: "10px 16px",
               borderBottom: "1px solid var(--line)",
               fontSize: 11,
@@ -4971,7 +5026,8 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
                 {th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort")}
               </React.Fragment>
             ))}
-            {th("In transit", "transit")}
+            {th("In transit", "transit", "On a transfer between your warehouses, not received yet — click to sort")}
+            {th("Incoming", "incoming", "Still to come on open purchase orders — click a PO to see it — click to sort")}
             {th("On hand", "onHand")}
             {th("Committed", "committed")}
             {th("Available", "available")}
@@ -4982,17 +5038,17 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
             </div>
           )}
           {shown.slice(0, limit).map((r) => (
-            <WarehouseRow key={r.id} r={r} whs={whs} grid={grid} />
+            <WarehouseRow key={r.id} r={r} whs={whs} grid={grid} pos={ws.pos} onPo={onPo} />
           ))}
+          {shown.length > limit && (
+            <div ref={moreRef} style={{ textAlign: "center", padding: "12px 0" }}>
+              <button onClick={() => setLimit((n) => n + WH_PAGE)} style={btnSec}>
+                Show more ({shown.length - limit} left)
+              </button>
+            </div>
+          )}
         </div>
       </div>
-      {shown.length > limit && (
-        <div ref={moreRef} style={{ textAlign: "center", marginTop: 10 }}>
-          <button onClick={() => setLimit((n) => n + WH_PAGE)} style={btnSec}>
-            Show more ({shown.length - limit} left)
-          </button>
-        </div>
-      )}
       <p style={{ ...note, marginTop: 10 }}>
         {kind === "items"
           ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. "
@@ -5001,14 +5057,158 @@ function WarehouseStock({ ws, rows, q, kind, headerWith }) {
             : "Every active composite item in Zoho, apart from the Marble Atelier line. "}
         Each warehouse shows stock on hand, with committed (on sales orders,
         not shipped yet) under it. In transit is on a transfer between
-        warehouses, not received yet. On hand, committed and available match
+        warehouses, not received yet; incoming is still to come on open POs
+        (click a PO number to see the whole order). Under available: how short
+        of the reorder point an item is after incoming, or ✓ when POs cover it.
+        On hand, committed and available match
         Zoho's Accounting Stock, leaving out inactive warehouses (Studio,
         Design Office). Out of stock = nothing available. Updated with every Zoho
         refresh{ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : ""}.
       </p>
+      {openPo && (
+        <PoPanel
+          ws={ws}
+          po={(ws.pos || {})[openPo.id]}
+          fromId={openPo.fromId}
+          onClose={() => setOpenPo(null)}
+        />
+      )}
     </div>
   );
 }
+
+// one open PO, opened from a warehouse table's Incoming cell: everything
+// still to come on it, with what's available of each item right now
+function PoPanel({ ws, po, fromId, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const byId = useMemo(() => {
+    const m = new Map();
+    for (const r of [...ws.items, ...ws.composites]) m.set(r.id, whTotals(r, ws.warehouses));
+    return m;
+  }, [ws]);
+  if (!po) return null;
+  const exp = po.expected && describeDate(po.expected);
+  const total = po.lines.reduce((n, l) => n + l.qty, 0);
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        background: "rgba(23,19,17,.45)",
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+        animation: "slideIn .15s ease",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          background: "var(--card)",
+          borderRadius: 14,
+          padding: "22px 24px",
+          maxWidth: 620,
+          width: "100%",
+          maxHeight: "85vh",
+          overflowY: "auto",
+          boxShadow: "0 20px 60px rgba(0,0,0,.35)",
+        }}
+      >
+        <h3 className="serif" style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 600 }}>
+          {po.number}
+        </h3>
+        <div style={{ fontSize: 13.5, color: "var(--muted)", lineHeight: 1.5 }}>
+          {po.vendor || "No vendor"}
+          {po.date && ` · ordered ${describeDate(po.date).label}`}
+          {" · "}
+          {exp ? (
+            <span style={{ color: exp.late ? "var(--clay)" : "var(--muted)" }}>
+              expected {exp.label} ({exp.rel})
+            </span>
+          ) : (
+            "no expected date"
+          )}
+          {po.status && ` · ${po.status.replace(/_/g, " ")}`}
+        </div>
+        <div style={{ fontSize: 13, margin: "14px 0 6px", fontWeight: 600 }}>
+          {total} still to come, {po.lines.length} item{po.lines.length === 1 ? "" : "s"}
+        </div>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 10 }}>
+          <div
+            style={{
+              ...poGrid,
+              padding: "8px 12px",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              color: "var(--muted)",
+            }}
+          >
+            <div>Item</div>
+            <div style={{ textAlign: "center" }}>Coming</div>
+            <div style={{ textAlign: "center" }}>Available now</div>
+          </div>
+          {po.lines.map((l, i) => {
+            const t = byId.get(l.itemId);
+            return (
+              <div
+                key={i}
+                style={{
+                  ...poGrid,
+                  padding: "8px 12px",
+                  borderBottom: i < po.lines.length - 1 ? "1px solid var(--line)" : "none",
+                  alignItems: "center",
+                  fontSize: 13.5,
+                  background: l.itemId === fromId ? "var(--sageDim)" : "transparent",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>{l.name}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{l.sku}</div>
+                </div>
+                <div style={{ textAlign: "center", fontWeight: 600 }}>{l.qty}</div>
+                <div
+                  style={{
+                    textAlign: "center",
+                    color: t ? whAvailColor(t.available) : "var(--muted)",
+                  }}
+                >
+                  {t ? t.available : "—"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
+          {ws.poUrl && (
+            <a
+              href={ws.poUrl + po.id}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ ...btnSec, textDecoration: "none", color: "var(--ink)" }}
+            >
+              Open in Zoho ↗
+            </a>
+          )}
+          <button onClick={onClose} style={btnSec}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+const poGrid = { display: "grid", gridTemplateColumns: "1fr 80px 110px", gap: 10 };
 
 const WH_PAGE = 100;
 // the name stays put while the numbers scroll sideways (phones)
@@ -5029,7 +5229,8 @@ const whAvailColor = (n) =>
 
 // one WarehouseStock row — memo'd so a click elsewhere (a filter, the
 // refresh countdown) doesn't redraw every row
-const WarehouseRow = React.memo(function WarehouseRow({ r, whs, grid }) {
+const WarehouseRow = React.memo(function WarehouseRow({ r, whs, grid, pos, onPo }) {
+  const poIds = (r.poIds || []).filter((id) => pos && pos[id]);
   return (
     <div
       style={{
@@ -5058,16 +5259,43 @@ const WarehouseRow = React.memo(function WarehouseRow({ r, whs, grid }) {
       {r.tracked ? (
         <>
           <div style={{ ...midCell, color: whNum(r.transit) }}>{r.transit}</div>
+          <div style={midCell}>
+            <div style={{ color: whNum(r.incoming) }}>{r.incoming}</div>
+            {poIds.slice(0, 2).map((id) => (
+              <button
+                key={id}
+                onClick={() => onPo(id, r.id)}
+                title="See everything coming on this PO"
+                style={{ ...cellLink, fontSize: 11.5, padding: 0, display: "block", margin: "0 auto", color: "var(--clay)", textDecoration: "underline" }}
+              >
+                {pos[id].number}
+              </button>
+            ))}
+            {poIds.length > 2 && (
+              <button
+                onClick={() => onPo(poIds[2], r.id)}
+                title={poIds.slice(2).map((id) => pos[id].number).join(", ")}
+                style={{ ...cellLink, fontSize: 11.5, padding: 0, color: "var(--muted)" }}
+              >
+                +{poIds.length - 2} more
+              </button>
+            )}
+          </div>
           <div style={{ ...midCell, fontWeight: 600, color: whNum(r.onHand) }}>{r.onHand}</div>
           <div style={{ ...midCell, fontWeight: r.committed ? 600 : 400, color: r.committed ? "var(--amber)" : "var(--muted)" }}>
             {r.committed}
           </div>
-          <div style={{ ...midCell, fontWeight: 600, color: whAvailColor(r.available) }}>
-            {r.available}
+          <div style={midCell} title={r.reorderLevel ? `Reorder point ${r.reorderLevel}` : undefined}>
+            <div style={{ fontWeight: 600, color: whAvailColor(r.available) }}>{r.available}</div>
+            {r.below && (
+              <div style={{ fontSize: 11.5, color: r.short ? "var(--clay)" : "var(--sage)" }}>
+                {r.short ? `short ${r.short}` : "✓ PO covers"}
+              </div>
+            )}
           </div>
         </>
       ) : (
-        <div style={{ ...midCell, gridColumn: "span 4", color: "var(--muted)" }}>not tracked</div>
+        <div style={{ ...midCell, gridColumn: "span 5", color: "var(--muted)" }}>not tracked</div>
       )}
     </div>
   );

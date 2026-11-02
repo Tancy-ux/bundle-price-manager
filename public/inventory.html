@@ -24,6 +24,9 @@
   .cellEdit:focus{border-color:var(--line);background:#fff}
   .cellEdit::placeholder{color:var(--muted)}
   .serif{font-family:'Iowan Old Style',Georgia,'Times New Roman',serif}
+  /* scrolls (wheel / trackpad / touch) without showing a scrollbar */
+  .noScrollbar{scrollbar-width:none}
+  .noScrollbar::-webkit-scrollbar{display:none}
   @keyframes slideIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 </style>
 </head>

@@ -3521,6 +3521,16 @@ function Reorder({
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
   const [refreshing, setRefreshing] = useState(false);
+  // the sticky header's height, so the warehouse tables can fill the rest of
+  // the screen (it remounts when the table changes, hence a callback ref)
+  const [hdrH, setHdrH] = useState(0);
+  const hdrRo = useRef(null);
+  const hdrRef = React.useCallback(el => {
+    if (hdrRo.current) hdrRo.current.disconnect();
+    if (!el || !window.ResizeObserver) return;
+    hdrRo.current = new ResizeObserver(() => setHdrH(el.offsetHeight));
+    hdrRo.current.observe(el);
+  }, []);
   // re-render every 30s so the cooldown countdown ticks and the button
   // re-enables on its own
   const [, setTick] = useState(0);
@@ -3716,6 +3726,7 @@ function Reorder({
   // sticky header: which table, then search/vendor/refresh, then that
   // table's own filters (passed in — the warehouse tables bring their own)
   const headerWith = filters => /*#__PURE__*/React.createElement("div", {
+    ref: hdrRef,
     style: {
       position: "sticky",
       top: stickyTop || 0,
@@ -3800,7 +3811,8 @@ function Reorder({
     rows: whTables[table],
     q: q,
     kind: table,
-    headerWith: headerWith
+    headerWith: headerWith,
+    topOffset: (stickyTop || 0) + hdrH
   });
   if (!doc.lastSyncAt) return /*#__PURE__*/React.createElement("div", null, header, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4106,11 +4118,19 @@ function whTotals(r, whs) {
     committed += c;
   }
   const onHand = r.total == null ? inWarehouses : r.total;
+  const incoming = r.incoming || 0;
+  const reorderLevel = r.reorderLevel || 0;
+  // same rule as the Reorder list (see shortOf): below = on hand under the
+  // reorder point; still short = what open POs don't cover
+  const below = r.tracked && reorderLevel > 0 && onHand < reorderLevel;
   return {
     onHand,
     transit: onHand - inWarehouses,
     committed,
-    available: onHand - committed
+    available: onHand - committed,
+    incoming,
+    below,
+    short: below ? Math.max(0, reorderLevel - onHand - incoming) : 0
   };
 }
 
@@ -4123,10 +4143,17 @@ function WarehouseStock({
   rows,
   q,
   kind,
-  headerWith
+  headerWith,
+  topOffset
 }) {
-  const [filter, setFilter] = useState("all"); // all | oos | committed | transit
-  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | onHand | committed | available
+  const [filter, setFilter] = useState("all"); // all | oos | below | short | committed | transit
+  const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | incoming | onHand | committed | available
+  // the PO opened from an Incoming cell: {id, fromId} (fromId = the row clicked)
+  const [openPo, setOpenPo] = useState(null);
+  const onPo = React.useCallback((id, fromId) => setOpenPo({
+    id,
+    fromId
+  }), []);
   const [sortDir, setSortDir] = useState("asc");
   const whs = ws ? ws.warehouses : [];
   // typing in search stays snappy — the table catches up a beat later
@@ -4137,12 +4164,14 @@ function WarehouseStock({
   const [limit, setLimit] = useState(WH_PAGE);
   useEffect(() => setLimit(WH_PAGE), [filter, dq, sortBy, sortDir]);
   const moreRef = useRef(null);
+  const boxRef = useRef(null); // the table's own scroll box
   useEffect(() => {
     const el = moreRef.current;
     if (!el || !window.IntersectionObserver) return;
     const io = new IntersectionObserver(es => {
       if (es[0].isIntersecting) setLimit(n => n + WH_PAGE);
     }, {
+      root: boxRef.current,
       rootMargin: "400px"
     });
     io.observe(el);
@@ -4150,8 +4179,10 @@ function WarehouseStock({
   });
   const grid = useMemo(() => ({
     display: "grid",
-    gridTemplateColumns: `minmax(220px,2fr) repeat(${whs.length}, 92px) repeat(4, 86px)`,
-    gap: 12
+    // … warehouses · in transit · incoming · on hand · committed · available
+    // wide enough for each heading on one line ("WARE INNOVATIONS ↕")
+    gridTemplateColumns: `minmax(200px,2fr) repeat(${whs.length}, minmax(128px,1fr)) 88px 96px 76px 92px 88px`,
+    gap: 10
   }), [whs.length]);
   const withTotals = useMemo(() => rows.map(r => ({
     ...r,
@@ -4162,6 +4193,8 @@ function WarehouseStock({
   const counts = useMemo(() => ({
     all: withTotals.length,
     oos: withTotals.filter(isOos).length,
+    below: withTotals.filter(r => r.below).length,
+    short: withTotals.filter(r => r.short > 0).length,
     committed: withTotals.filter(r => r.committed > 0).length,
     transit: withTotals.filter(r => r.transit !== 0).length
   }), [withTotals]);
@@ -4169,6 +4202,8 @@ function WarehouseStock({
     const keep = {
       all: () => true,
       oos: isOos,
+      below: r => r.below,
+      short: r => r.short > 0,
       committed: r => r.committed > 0,
       transit: r => r.transit !== 0
     }[filter];
@@ -4203,6 +4238,7 @@ function WarehouseStock({
     style: {
       ...(col === "name" ? whStickyName : null),
       textAlign: col === "name" ? "left" : "center",
+      whiteSpace: "nowrap",
       cursor: "pointer",
       userSelect: "none"
     }
@@ -4211,28 +4247,39 @@ function WarehouseStock({
       opacity: 0.4
     }
   }, " ↕"));
-  return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+  return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["below", `Below reorder point (${counts.below})`], ["short", `Still short (${counts.short})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => setFilter(k),
-    title: k === "oos" ? "Nothing available to sell — on hand minus committed is 0 or less" : undefined,
+    title: {
+      oos: "Nothing available to sell — on hand minus committed is 0 or less",
+      below: "On hand is under the item's reorder point in Zoho",
+      short: "Below the reorder point even after what's coming on open POs"
+    }[k],
     style: {
       ...catPill(filter === k),
       textTransform: "none"
     }
   }, label))), /*#__PURE__*/React.createElement("div", {
+    ref: boxRef,
+    className: "noScrollbar",
     style: {
       background: "var(--card)",
       border: "1px solid var(--line)",
       borderRadius: 12,
-      overflowX: "auto"
+      overflow: "auto",
+      maxHeight: `calc(100vh - ${(topOffset || 0) + 16}px)`
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: 620 + whs.length * 104
+      minWidth: 200 + 440 + 6 * 10 + 32 + whs.length * 138
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...grid,
+      position: "sticky",
+      top: 0,
+      zIndex: 2,
+      background: "var(--card)",
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       fontSize: 11,
@@ -4243,7 +4290,7 @@ function WarehouseStock({
     }
   }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement(React.Fragment, {
     key: w.id
-  }, th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort"))), th("In transit", "transit"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
+  }, th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort"))), th("In transit", "transit", "On a transfer between your warehouses, not received yet — click to sort"), th("Incoming", "incoming", "Still to come on open purchase orders — click a PO to see it — click to sort"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "30px 16px",
       textAlign: "center",
@@ -4254,23 +4301,187 @@ function WarehouseStock({
     key: r.id,
     r: r,
     whs: whs,
-    grid: grid
-  })))), shown.length > limit && /*#__PURE__*/React.createElement("div", {
+    grid: grid,
+    pos: ws.pos,
+    onPo: onPo
+  })), shown.length > limit && /*#__PURE__*/React.createElement("div", {
     ref: moreRef,
     style: {
       textAlign: "center",
-      marginTop: 10
+      padding: "12px 0"
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => setLimit(n => n + WH_PAGE),
     style: btnSec
-  }, "Show more (", shown.length - limit, " left)")), /*#__PURE__*/React.createElement("p", {
+  }, "Show more (", shown.length - limit, " left)")))), /*#__PURE__*/React.createElement("p", {
     style: {
       ...note,
       marginTop: 10
     }
-  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. " : kind === "marble" ? "The Marble Atelier line (Claude, Horizon, Arc, Pivot marble and Pivot vases) — live-on-Shopify items plus any composites. " : "Every active composite item in Zoho, apart from the Marble Atelier line. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."));
+  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. " : kind === "marble" ? "The Marble Atelier line (Claude, Horizon, Arc, Pivot marble and Pivot vases) — live-on-Shopify items plus any composites. " : "Every active composite item in Zoho, apart from the Marble Atelier line. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet; incoming is still to come on open POs (click a PO number to see the whole order). Under available: how short of the reorder point an item is after incoming, or ✓ when POs cover it. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."), openPo && /*#__PURE__*/React.createElement(PoPanel, {
+    ws: ws,
+    po: (ws.pos || {})[openPo.id],
+    fromId: openPo.fromId,
+    onClose: () => setOpenPo(null)
+  }));
 }
+
+// one open PO, opened from a warehouse table's Incoming cell: everything
+// still to come on it, with what's available of each item right now
+function PoPanel({
+  ws,
+  po,
+  fromId,
+  onClose
+}) {
+  useEffect(() => {
+    const onKey = e => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const byId = useMemo(() => {
+    const m = new Map();
+    for (const r of [...ws.items, ...ws.composites]) m.set(r.id, whTotals(r, ws.warehouses));
+    return m;
+  }, [ws]);
+  if (!po) return null;
+  const exp = po.expected && describeDate(po.expected);
+  const total = po.lines.reduce((n, l) => n + l.qty, 0);
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 50,
+      background: "rgba(23,19,17,.45)",
+      display: "grid",
+      placeItems: "center",
+      padding: 20,
+      animation: "slideIn .15s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    role: "dialog",
+    "aria-modal": "true",
+    style: {
+      background: "var(--card)",
+      borderRadius: 14,
+      padding: "22px 24px",
+      maxWidth: 620,
+      width: "100%",
+      maxHeight: "85vh",
+      overflowY: "auto",
+      boxShadow: "0 20px 60px rgba(0,0,0,.35)"
+    }
+  }, /*#__PURE__*/React.createElement("h3", {
+    className: "serif",
+    style: {
+      margin: "0 0 4px",
+      fontSize: 20,
+      fontWeight: 600
+    }
+  }, po.number), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--muted)",
+      lineHeight: 1.5
+    }
+  }, po.vendor || "No vendor", po.date && ` · ordered ${describeDate(po.date).label}`, " · ", exp ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: exp.late ? "var(--clay)" : "var(--muted)"
+    }
+  }, "expected ", exp.label, " (", exp.rel, ")") : "no expected date", po.status && ` · ${po.status.replace(/_/g, " ")}`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      margin: "14px 0 6px",
+      fontWeight: 600
+    }
+  }, total, " still to come, ", po.lines.length, " item", po.lines.length === 1 ? "" : "s"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: "1px solid var(--line)",
+      borderRadius: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...poGrid,
+      padding: "8px 12px",
+      borderBottom: "1px solid var(--line)",
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+      color: "var(--muted)"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, "Item"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, "Coming"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, "Available now")), po.lines.map((l, i) => {
+    const t = byId.get(l.itemId);
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        ...poGrid,
+        padding: "8px 12px",
+        borderBottom: i < po.lines.length - 1 ? "1px solid var(--line)" : "none",
+        alignItems: "center",
+        fontSize: 13.5,
+        background: l.itemId === fromId ? "var(--sageDim)" : "transparent"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 600
+      }
+    }, l.name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "var(--muted)"
+      }
+    }, l.sku)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: "center",
+        fontWeight: 600
+      }
+    }, l.qty), /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: "center",
+        color: t ? whAvailColor(t.available) : "var(--muted)"
+      }
+    }, t ? t.available : "—"));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 10,
+      marginTop: 16
+    }
+  }, ws.poUrl && /*#__PURE__*/React.createElement("a", {
+    href: ws.poUrl + po.id,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      ...btnSec,
+      textDecoration: "none",
+      color: "var(--ink)"
+    }
+  }, "Open in Zoho ↗"), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    style: btnSec
+  }, "Close"))));
+}
+const poGrid = {
+  display: "grid",
+  gridTemplateColumns: "1fr 80px 110px",
+  gap: 10
+};
 const WH_PAGE = 100;
 // the name stays put while the numbers scroll sideways (phones)
 const whStickyName = {
@@ -4292,8 +4503,11 @@ const whAvailColor = n => n <= 0 ? "var(--clay)" : n < 10 ? "var(--amber)" : "va
 const WarehouseRow = React.memo(function WarehouseRow({
   r,
   whs,
-  grid
+  grid,
+  pos,
+  onPo
 }) {
+  const poIds = (r.poIds || []).filter(id => pos && pos[id]);
   return /*#__PURE__*/React.createElement("div", {
     style: {
       ...grid,
@@ -4334,6 +4548,34 @@ const WarehouseRow = React.memo(function WarehouseRow({
       color: whNum(r.transit)
     }
   }, r.transit), /*#__PURE__*/React.createElement("div", {
+    style: midCell
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: whNum(r.incoming)
+    }
+  }, r.incoming), poIds.slice(0, 2).map(id => /*#__PURE__*/React.createElement("button", {
+    key: id,
+    onClick: () => onPo(id, r.id),
+    title: "See everything coming on this PO",
+    style: {
+      ...cellLink,
+      fontSize: 11.5,
+      padding: 0,
+      display: "block",
+      margin: "0 auto",
+      color: "var(--clay)",
+      textDecoration: "underline"
+    }
+  }, pos[id].number)), poIds.length > 2 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onPo(poIds[2], r.id),
+    title: poIds.slice(2).map(id => pos[id].number).join(", "),
+    style: {
+      ...cellLink,
+      fontSize: 11.5,
+      padding: 0,
+      color: "var(--muted)"
+    }
+  }, "+", poIds.length - 2, " more")), /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
       fontWeight: 600,
@@ -4346,15 +4588,22 @@ const WarehouseRow = React.memo(function WarehouseRow({
       color: r.committed ? "var(--amber)" : "var(--muted)"
     }
   }, r.committed), /*#__PURE__*/React.createElement("div", {
+    style: midCell,
+    title: r.reorderLevel ? `Reorder point ${r.reorderLevel}` : undefined
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
-      ...midCell,
       fontWeight: 600,
       color: whAvailColor(r.available)
     }
-  }, r.available)) : /*#__PURE__*/React.createElement("div", {
+  }, r.available), r.below && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: r.short ? "var(--clay)" : "var(--sage)"
+    }
+  }, r.short ? `short ${r.short}` : "✓ PO covers"))) : /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
-      gridColumn: "span 4",
+      gridColumn: "span 5",
       color: "var(--muted)"
     }
   }, "not tracked"));
