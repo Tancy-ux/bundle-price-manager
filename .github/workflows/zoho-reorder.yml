@@ -40,6 +40,7 @@ jobs:
           ZOHO_CLIENT_SECRET: ${{ secrets.ZOHO_CLIENT_SECRET }}
           ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
           ZOHO_ORG_ID: ${{ secrets.ZOHO_ORG_ID }}
+        shell: bash # pipefail, so a script failure fails the job despite tee
         run: node scripts/zoho-reorder.js --apply | tee reorder-output.txt
 
       - name: Publish report to job summary

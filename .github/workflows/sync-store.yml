@@ -47,6 +47,7 @@ jobs:
           KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+        shell: bash # pipefail, so a script failure fails the job despite tee
         run: |
           FLAGS="--shopify"
           if [ "${{ inputs.apply }}" = "true" ]; then FLAGS="$FLAGS --apply"; fi
