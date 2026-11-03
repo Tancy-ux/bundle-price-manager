@@ -287,14 +287,23 @@ function App() {
       const r = await fetch("/api/sync", {
         method: "POST"
       });
-      const j = await r.json();
+      // a platform error (e.g. Vercel's function timeout) comes back as plain
+      // text, not JSON — show it rather than "is the server running?"
+      const text = await r.text();
+      let j;
+      try {
+        j = JSON.parse(text);
+      } catch {
+        flash(`Sync failed (${r.status}): ${text.slice(0, 200)}`);
+        return;
+      }
       if (r.status === 429) {
         const hrs = Math.ceil((j.retryAfterMs || 0) / 3600000);
         flash(`Already synced — try again in about ${hrs}h`);
         return;
       }
       if (!r.ok) {
-        flash(j.error || "Sync failed");
+        flash([j.error || "Sync failed", j.detail].filter(Boolean).join(" — "));
         return;
       }
       adoptData(j.data);
