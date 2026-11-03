@@ -3920,7 +3920,8 @@ function describeDate(iso) {
   return {
     label,
     rel,
-    late: days < 0
+    late: days < 0,
+    days
   };
 }
 function ExpectedDateCell({
@@ -4157,9 +4158,11 @@ function WarehouseStock({
 }) {
   const [filter, setFilter] = useState("all"); // all | oos | below | short | committed | transit
   const [sortBy, setSortBy] = useState("name"); // name | wh:<id> | transit | incoming | onHand | committed | available
-  // the PO opened from an Incoming cell: {id, fromId} (fromId = the row clicked)
-  const [openPo, setOpenPo] = useState(null);
-  const onPo = React.useCallback((id, fromId) => setOpenPo({
+  // the PO / TO opened from an Incoming / In transit cell:
+  // {kind: "po" | "to", id, fromId} (fromId = the row clicked)
+  const [openDoc, setOpenDoc] = useState(null);
+  const onDoc = React.useCallback((kind, id, fromId) => setOpenDoc({
+    kind,
     id,
     fromId
   }), []);
@@ -4190,7 +4193,7 @@ function WarehouseStock({
     display: "grid",
     // … warehouses · in transit · incoming · on hand · committed · available
     // wide enough for each heading on one line ("WARE INNOVATIONS ↕")
-    gridTemplateColumns: `minmax(200px,2fr) repeat(${whs.length}, minmax(128px,1fr)) 88px 96px 76px 92px 88px`,
+    gridTemplateColumns: `minmax(200px,2fr) repeat(${whs.length}, minmax(128px,1fr)) ${WH_TOTALS_COLS}`,
     gap: 10
   }), [whs.length]);
   const withTotals = useMemo(() => rows.map(r => ({
@@ -4256,90 +4259,136 @@ function WarehouseStock({
       opacity: 0.4
     }
   }, " ↕"));
-  return /*#__PURE__*/React.createElement("div", null, headerWith([["all", `All (${counts.all})`], ["oos", `Out of stock (${counts.oos})`], ["below", `Below reorder point (${counts.below})`], ["short", `Still short (${counts.short})`], ["committed", `Has committed (${counts.committed})`], ["transit", `In transit (${counts.transit})`]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
-    key: k,
-    onClick: () => setFilter(k),
-    title: {
-      oos: "Nothing available to sell — on hand minus committed is 0 or less",
-      below: "On hand is under the item's reorder point in Zoho",
-      short: "Below the reorder point even after what's coming on open POs"
-    }[k],
+  // the group label over each block of columns
+  const group = (label, span, color, line) => /*#__PURE__*/React.createElement("div", {
     style: {
-      ...catPill(filter === k),
-      textTransform: "none"
-    }
-  }, label))), /*#__PURE__*/React.createElement("div", {
-    ref: boxRef,
-    className: "noScrollbar",
-    style: {
-      background: "var(--card)",
-      border: "1px solid var(--line)",
-      borderRadius: 12,
-      overflow: "auto",
-      maxHeight: `calc(100vh - ${(topOffset || 0) + 16}px)`
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      minWidth: 200 + 440 + 6 * 10 + 32 + whs.length * 138
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...grid,
-      position: "sticky",
-      top: 0,
-      zIndex: 2,
-      background: "var(--card)",
-      padding: "10px 16px",
-      borderBottom: "1px solid var(--line)",
-      fontSize: 11,
-      fontWeight: 700,
-      letterSpacing: 0.6,
-      textTransform: "uppercase",
-      color: "var(--muted)"
-    }
-  }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement(React.Fragment, {
-    key: w.id
-  }, th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort"))), th("In transit", "transit", "On a transfer between your warehouses, not received yet — click to sort"), th("Incoming", "incoming", "Still to come on open purchase orders — click a PO to see it — click to sort"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available")), !shown.length && /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "30px 16px",
+      gridColumn: `span ${span}`,
       textAlign: "center",
-      color: "var(--muted)",
-      fontSize: 14
+      paddingBottom: 6,
+      borderBottom: `2px solid ${line}`,
+      color
     }
-  }, "No items match."), shown.slice(0, limit).map(r => /*#__PURE__*/React.createElement(WarehouseRow, {
-    key: r.id,
-    r: r,
-    whs: whs,
-    grid: grid,
-    pos: ws.pos,
-    onPo: onPo
-  })), shown.length > limit && /*#__PURE__*/React.createElement("div", {
-    ref: moreRef,
-    style: {
-      textAlign: "center",
-      padding: "12px 0"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setLimit(n => n + WH_PAGE),
-    style: btnSec
-  }, "Show more (", shown.length - limit, " left)")))), /*#__PURE__*/React.createElement("p", {
-    style: {
-      ...note,
-      marginTop: 10
-    }
-  }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. " : kind === "marble" ? "The Marble Atelier line (Claude, Horizon, Arc, Pivot marble and Pivot vases) — live-on-Shopify items plus any composites. " : "Every active composite item in Zoho, apart from the Marble Atelier line. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it. In transit is on a transfer between warehouses, not received yet; incoming is still to come on open POs (click a PO number to see the whole order). Under available: how short of the reorder point an item is after incoming, or ✓ when POs cover it. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."), openPo && /*#__PURE__*/React.createElement(PoPanel, {
-    ws: ws,
-    po: (ws.pos || {})[openPo.id],
-    fromId: openPo.fromId,
-    onClose: () => setOpenPo(null)
-  }));
+  }, label);
+  return (
+    /*#__PURE__*/
+    // a touch darker grey / amber than the rest of the app: this tab is mostly
+    // small numbers and labels, which the lighter shades made hard to read.
+    // --plum marks transfer orders, so they don't read as POs (clay)
+    React.createElement("div", {
+      style: {
+        "--muted": "#6f6658",
+        "--amber": "#8a6112",
+        "--plum": "#7a4a72"
+      }
+    }, headerWith(/*#__PURE__*/React.createElement("div", {
+      style: whTiles
+    }, [["all", "All items", "Every row in this table", "var(--ink)"], ["oos", "Out of stock", "Nothing left to sell", "var(--clay)"], ["below", "Below reorder", "On hand under the reorder point", "var(--amber)"], ["short", "Still short", "Even after open POs", "var(--clay)"], ["committed", "Has committed", "On sales orders, not shipped", "var(--amber)"], ["transit", "In transit", "On a transfer between warehouses", "var(--plum)"]].map(([k, label, hint, color]) => /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => setFilter(k),
+      "aria-pressed": filter === k,
+      title: hint,
+      style: whTile(filter === k)
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 700,
+        color: counts[k] ? color : "var(--muted)"
+      }
+    }, counts[k]), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: filter === k ? "var(--ink)" : "var(--muted)"
+      }
+    }, label))))), /*#__PURE__*/React.createElement("div", {
+      ref: boxRef,
+      className: "noScrollbar",
+      style: {
+        background: "var(--card)",
+        border: "1px solid var(--line)",
+        borderRadius: 12,
+        overflow: "auto",
+        maxHeight: `calc(100vh - ${(topOffset || 0) + 16}px)`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 200 + 472 + 6 * 10 + 32 + whs.length * 138
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        background: "var(--card)",
+        borderBottom: "1px solid var(--line)",
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: 0.6,
+        textTransform: "uppercase",
+        color: "var(--muted)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...grid,
+        padding: "10px 16px 0",
+        fontSize: 10.5,
+        letterSpacing: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: whStickyName
+    }), group("Stock by warehouse", whs.length, "var(--muted)", "var(--line)"), group("On the way", 2, "var(--muted)", "var(--line)"), group("Totals", 3, "var(--sage)", "var(--sageDim)")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        ...grid,
+        padding: "10px 16px"
+      }
+    }, th("Name", "name"), whs.map(w => /*#__PURE__*/React.createElement(React.Fragment, {
+      key: w.id
+    }, th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort"))), th("In transit", "transit", "On a transfer between your warehouses, not received yet — click a TO to see it — click to sort"), th("Incoming", "incoming", "Still to come on open purchase orders — click a PO to see it — click to sort"), th("On hand", "onHand"), th("Committed", "committed"), th("Available", "available"))), !shown.length && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "30px 16px",
+        textAlign: "center",
+        color: "var(--muted)",
+        fontSize: 14
+      }
+    }, "No items match."), shown.slice(0, limit).map(r => /*#__PURE__*/React.createElement(WarehouseRow, {
+      key: r.id,
+      r: r,
+      whs: whs,
+      grid: grid,
+      pos: ws.pos,
+      tos: ws.tos,
+      onDoc: onDoc
+    })), shown.length > limit && /*#__PURE__*/React.createElement("div", {
+      ref: moreRef,
+      style: {
+        textAlign: "center",
+        padding: "12px 0"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setLimit(n => n + WH_PAGE),
+      style: btnSec
+    }, "Show more (", shown.length - limit, " left)")))), /*#__PURE__*/React.createElement("p", {
+      style: {
+        ...note,
+        marginTop: 10
+      }
+    }, kind === "items" ? "Zoho items whose SKU is live on Shopify (active in this catalog), apart from the Marble Atelier line. " : kind === "marble" ? "The Marble Atelier line (Claude, Horizon, Arc, Pivot marble and Pivot vases) — live-on-Shopify items plus any composites. " : "Every active composite item in Zoho, apart from the Marble Atelier line. ", "Each warehouse shows stock on hand, with committed (on sales orders, not shipped yet) under it; a dash means zero. In transit is on a transfer between warehouses, not received yet; incoming is still to come on open POs (click a TO or PO number to see the whole order", ws.transferError ? " — TO links didn't load on the last refresh" : "", "). Under available: how short of the reorder point an item is after incoming, or ✓ when POs cover it. On hand, committed and available match Zoho's Accounting Stock, leaving out inactive warehouses (Studio, Design Office). Out of stock = nothing available. Updated with every Zoho refresh", ws.syncedAt ? ` · last ${timeAgo(ws.syncedAt)}` : "", "."), openDoc && /*#__PURE__*/React.createElement(DocPanel, {
+      ws: ws,
+      kind: openDoc.kind,
+      doc: ((openDoc.kind === "to" ? ws.tos : ws.pos) || {})[openDoc.id],
+      fromId: openDoc.fromId,
+      onClose: () => setOpenDoc(null)
+    }))
+  );
 }
 
-// one open PO, opened from a warehouse table's Incoming cell: everything
-// still to come on it, with what's available of each item right now
-function PoPanel({
+// a transfer order's route, short enough for a table cell: "Aaj → Ware"
+const shortRoute = to => `${to.from.split(" ")[0]} → ${to.to.split(" ")[0]}`;
+
+// one open PO or in-transit TO, opened from a warehouse table's Incoming /
+// In transit cell: a side panel (the table stays in view) with everything
+// still to come on it
+function DocPanel({
   ws,
-  po,
+  kind,
+  doc,
   fromId,
   onClose
 }) {
@@ -4348,64 +4397,105 @@ function PoPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const byId = useMemo(() => {
+  const rowById = useMemo(() => {
     const m = new Map();
-    for (const r of [...ws.items, ...ws.composites]) m.set(r.id, whTotals(r, ws.warehouses));
+    for (const r of [...ws.items, ...ws.composites]) m.set(r.id, r);
     return m;
   }, [ws]);
-  if (!po) return null;
-  const exp = po.expected && describeDate(po.expected);
-  const total = po.lines.reduce((n, l) => n + l.qty, 0);
+  if (!doc) return null;
+  const isTo = kind === "to";
+  const total = doc.lines.reduce((n, l) => n + l.qty, 0);
+  // TO: what's at the destination now; PO: what's available to sell now
+  const nowOf = l => {
+    const r = rowById.get(l.itemId);
+    if (!r) return null;
+    return isTo ? (r.byWarehouse[doc.toWarehouseId] || [0])[0] : whTotals(r, ws.warehouses).available;
+  };
+  const exp = !isTo && doc.expected && describeDate(doc.expected);
+  const sentDays = isTo && doc.date ? -describeDate(doc.date).days : null;
+  const url = isTo ? ws.toUrl : ws.poUrl;
   return /*#__PURE__*/React.createElement("div", {
     onClick: onClose,
     style: {
       position: "fixed",
       inset: 0,
       zIndex: 50,
-      background: "rgba(23,19,17,.45)",
-      display: "grid",
-      placeItems: "center",
-      padding: 20,
-      animation: "slideIn .15s ease"
+      background: "rgba(23,19,17,.4)",
+      display: "flex",
+      justifyContent: "flex-end"
     }
   }, /*#__PURE__*/React.createElement("div", {
     onClick: e => e.stopPropagation(),
     role: "dialog",
     "aria-modal": "true",
+    "aria-label": isTo ? `Transfer order ${doc.number}` : doc.number,
     style: {
       background: "var(--card)",
-      borderRadius: 14,
+      width: "min(480px, 100%)",
+      height: "100%",
       padding: "22px 24px",
-      maxWidth: 620,
-      width: "100%",
-      maxHeight: "85vh",
+      boxSizing: "border-box",
       overflowY: "auto",
-      boxShadow: "0 20px 60px rgba(0,0,0,.35)"
+      boxShadow: "-12px 0 40px rgba(0,0,0,.25)",
+      display: "flex",
+      flexDirection: "column",
+      animation: "slideInRight .18s ease"
     }
-  }, /*#__PURE__*/React.createElement("h3", {
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 1.2,
+      textTransform: "uppercase",
+      color: isTo ? "var(--plum)" : "#a8401f"
+    }
+  }, isTo ? "Transfer order · in transit" : `Purchase order${doc.status ? ` · ${doc.status.replace(/_/g, " ")}` : ""}`), /*#__PURE__*/React.createElement("h3", {
     className: "serif",
     style: {
-      margin: "0 0 4px",
-      fontSize: 20,
+      margin: "2px 0 10px",
+      fontSize: 22,
       fontWeight: 600
     }
-  }, po.number), /*#__PURE__*/React.createElement("div", {
+  }, isTo ? `TO ${doc.number}` : doc.number), isTo ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "10px 14px",
+      borderRadius: 10,
+      background: "var(--paper)",
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, doc.from, /*#__PURE__*/React.createElement("span", {
+    "aria-hidden": "true",
+    style: {
+      color: "var(--plum)"
+    }
+  }, "→"), doc.to), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: "var(--muted)",
+      lineHeight: 1.5,
+      marginTop: 8
+    }
+  }, doc.date ? `Sent ${describeDate(doc.date).label} · on the way ${sentDays <= 0 ? "since today" : `${sentDays} day${sentDays === 1 ? "" : "s"}`}` : "No date", " · ", "left ", doc.from, "'s stock, not received yet")) : /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13.5,
       color: "var(--muted)",
       lineHeight: 1.5
     }
-  }, po.vendor || "No vendor", po.date && ` · ordered ${describeDate(po.date).label}`, " · ", exp ? /*#__PURE__*/React.createElement("span", {
+  }, doc.vendor || "No vendor", doc.date && ` · ordered ${describeDate(doc.date).label}`, " · ", exp ? /*#__PURE__*/React.createElement("span", {
     style: {
       color: exp.late ? "var(--clay)" : "var(--muted)"
     }
-  }, "expected ", exp.label, " (", exp.rel, ")") : "no expected date", po.status && ` · ${po.status.replace(/_/g, " ")}`), /*#__PURE__*/React.createElement("div", {
+  }, "expected ", exp.label, " (", exp.rel, ")") : "no expected date"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       margin: "14px 0 6px",
       fontWeight: 600
     }
-  }, total, " still to come, ", po.lines.length, " item", po.lines.length === 1 ? "" : "s"), /*#__PURE__*/React.createElement("div", {
+  }, total, " ", isTo ? "on the way" : "still to come", ", ", doc.lines.length, " item", doc.lines.length === 1 ? "" : "s"), /*#__PURE__*/React.createElement("div", {
     style: {
       border: "1px solid var(--line)",
       borderRadius: 10
@@ -4425,18 +4515,18 @@ function PoPanel({
     style: {
       textAlign: "center"
     }
-  }, "Coming"), /*#__PURE__*/React.createElement("div", {
+  }, isTo ? "Moving" : "Coming"), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center"
     }
-  }, "Available now")), po.lines.map((l, i) => {
-    const t = byId.get(l.itemId);
+  }, isTo ? `At ${doc.to.split(" ")[0]} now` : "Available now")), doc.lines.map((l, i) => {
+    const now = nowOf(l);
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
         ...poGrid,
         padding: "8px 12px",
-        borderBottom: i < po.lines.length - 1 ? "1px solid var(--line)" : "none",
+        borderBottom: i < doc.lines.length - 1 ? "1px solid var(--line)" : "none",
         alignItems: "center",
         fontSize: 13.5,
         background: l.itemId === fromId ? "var(--sageDim)" : "transparent"
@@ -4462,18 +4552,19 @@ function PoPanel({
     }, l.qty), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: "center",
-        color: t ? whAvailColor(t.available) : "var(--muted)"
+        color: now == null ? "var(--muted)" : isTo ? whNum(now) : whAvailColor(now)
       }
-    }, t ? t.available : "—"));
+    }, now == null ? "—" : isTo ? dash(now) : now));
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
       gap: 10,
-      marginTop: 16
+      marginTop: "auto",
+      paddingTop: 16
     }
-  }, ws.poUrl && /*#__PURE__*/React.createElement("a", {
-    href: ws.poUrl + po.id,
+  }, url && /*#__PURE__*/React.createElement("a", {
+    href: url + doc.id,
     target: "_blank",
     rel: "noopener noreferrer",
     style: {
@@ -4492,6 +4583,41 @@ const poGrid = {
   gap: 10
 };
 const WH_PAGE = 100;
+// in transit · incoming · on hand · committed · available
+const WH_TOTALS_COLS = "120px 96px 76px 92px 88px";
+// the filter tiles over the warehouse tables
+const whTiles = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6
+};
+const whTile = on => ({
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: 6,
+  padding: "6px 12px",
+  cursor: "pointer",
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 500,
+  background: on ? "var(--card)" : "transparent",
+  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
+  color: "var(--ink)"
+});
+// 0 reads as a dash, so the real numbers stand out
+const dash = n => n === 0 ? "–" : n;
+// a PO / TO number in a warehouse cell: a small tinted tag, clay for POs and
+// plum for TOs, on a barely-there tint of the same colour
+const docTag = kind => ({
+  display: "inline-block",
+  padding: "1px 8px",
+  borderRadius: 999,
+  fontSize: 11.5,
+  fontWeight: 600,
+  lineHeight: 1.5,
+  background: kind === "to" ? "#f8f1f6" : "#fbf1eb",
+  color: kind === "to" ? "var(--plum)" : "#a8401f"
+});
 // the name stays put while the numbers scroll sideways (phones)
 const whStickyName = {
   position: "sticky",
@@ -4514,9 +4640,11 @@ const WarehouseRow = React.memo(function WarehouseRow({
   whs,
   grid,
   pos,
-  onPo
+  tos,
+  onDoc
 }) {
   const poIds = (r.poIds || []).filter(id => pos && pos[id]);
+  const toIds = (r.toIds || []).filter(id => tos && tos[id]);
   return /*#__PURE__*/React.createElement("div", {
     style: {
       ...grid,
@@ -4545,38 +4673,68 @@ const WarehouseRow = React.memo(function WarehouseRow({
       style: {
         color: whNum(h)
       }
-    }, h), c !== 0 && /*#__PURE__*/React.createElement("div", {
+    }, dash(h)), c !== 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11.5,
         color: "var(--amber)"
       }
     }, c, " committed"));
   }), r.tracked ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...midCell,
-      color: whNum(r.transit)
-    }
-  }, r.transit), /*#__PURE__*/React.createElement("div", {
     style: midCell
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      color: whNum(r.incoming)
+      color: r.transit > 0 ? "var(--plum)" : whNum(r.transit),
+      fontWeight: r.transit ? 600 : 400
     }
-  }, r.incoming), poIds.slice(0, 2).map(id => /*#__PURE__*/React.createElement("button", {
+  }, dash(r.transit)), toIds.slice(0, 2).map(id => /*#__PURE__*/React.createElement("button", {
     key: id,
-    onClick: () => onPo(id, r.id),
-    title: "See everything coming on this PO",
+    onClick: () => onDoc("to", id, r.id),
+    title: `See everything on this transfer: ${tos[id].from} → ${tos[id].to}`,
+    style: {
+      ...cellLink,
+      padding: 0,
+      display: "block",
+      margin: "3px auto 0"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: docTag("to")
+  }, "TO ", tos[id].number), /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 11,
+      color: "var(--muted)",
+      marginTop: 1
+    }
+  }, shortRoute(tos[id])))), toIds.length > 2 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onDoc("to", toIds[2], r.id),
+    title: toIds.slice(2).map(id => `TO ${tos[id].number}`).join(", "),
     style: {
       ...cellLink,
       fontSize: 11.5,
       padding: 0,
-      display: "block",
-      margin: "0 auto",
-      color: "var(--clay)",
-      textDecoration: "underline"
+      color: "var(--muted)"
     }
-  }, pos[id].number)), poIds.length > 2 && /*#__PURE__*/React.createElement("button", {
-    onClick: () => onPo(poIds[2], r.id),
+  }, "+", toIds.length - 2, " more")), /*#__PURE__*/React.createElement("div", {
+    style: midCell
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: whNum(r.incoming),
+      fontWeight: r.incoming ? 600 : 400
+    }
+  }, dash(r.incoming)), poIds.slice(0, 2).map(id => /*#__PURE__*/React.createElement("button", {
+    key: id,
+    onClick: () => onDoc("po", id, r.id),
+    title: "See everything coming on this PO",
+    style: {
+      ...cellLink,
+      padding: 0,
+      display: "block",
+      margin: "3px auto 0"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: docTag("po")
+  }, pos[id].number))), poIds.length > 2 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onDoc("po", poIds[2], r.id),
     title: poIds.slice(2).map(id => pos[id].number).join(", "),
     style: {
       ...cellLink,
@@ -4590,13 +4748,13 @@ const WarehouseRow = React.memo(function WarehouseRow({
       fontWeight: 600,
       color: whNum(r.onHand)
     }
-  }, r.onHand), /*#__PURE__*/React.createElement("div", {
+  }, dash(r.onHand)), /*#__PURE__*/React.createElement("div", {
     style: {
       ...midCell,
       fontWeight: r.committed ? 600 : 400,
       color: r.committed ? "var(--amber)" : "var(--muted)"
     }
-  }, r.committed), /*#__PURE__*/React.createElement("div", {
+  }, dash(r.committed)), /*#__PURE__*/React.createElement("div", {
     style: midCell,
     title: r.reorderLevel ? `Reorder point ${r.reorderLevel}` : undefined
   }, /*#__PURE__*/React.createElement("div", {

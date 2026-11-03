@@ -27,6 +27,14 @@ console.log(
     ? `Warehouse stock: ${fresh.warehouseStock.items.length} items + ${fresh.warehouseStock.composites.length} composites across ${fresh.warehouseStock.warehouses.map((w) => w.name).join(", ")}`
     : `Warehouse stock: not refreshed — ${fresh.warehouseError}`
 );
+if (fresh.warehouseStock) {
+  const ws = fresh.warehouseStock;
+  console.log(
+    ws.transferError
+      ? `Transfer orders: not loaded — ${ws.transferError}`
+      : `Transfer orders: ${Object.keys(ws.tos).length} in transit`
+  );
+}
 
 // read right before merging so the write doesn't drop notes saved meanwhile
 const prev = (await r.get(REORDER_KEY)) || EMPTY_REORDER;

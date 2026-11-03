@@ -299,9 +299,10 @@ Needs, in `.env`, the Vercel project's Environment Variables, and the GitHub
 repository secrets: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`,
 `ZOHO_REFRESH_TOKEN`, `ZOHO_ORG_ID` (a Zoho **Self Client** at
 api-console.zoho.in with read-only scopes
-`ZohoInventory.items.READ,ZohoInventory.purchaseorders.READ,ZohoInventory.contacts.READ,ZohoInventory.compositeitems.READ,ZohoInventory.settings.READ`).
+`ZohoInventory.items.READ,ZohoInventory.purchaseorders.READ,ZohoInventory.contacts.READ,ZohoInventory.compositeitems.READ,ZohoInventory.settings.READ,ZohoInventory.transferorders.READ`).
 Without the compositeitems scope the reorder list still refreshes; only the
-warehouse views don't.
+warehouse views don't. Without transferorders the warehouse views load, just
+without the TO tags under In transit.
 
 ## Later: connecting to Shopify
 
