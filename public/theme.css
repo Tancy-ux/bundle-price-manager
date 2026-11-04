@@ -1,0 +1,45 @@
+/* shared by index.html and inventory.html */
+/* Marble: ivory page, Nero Marquina sidebar, brass details, oxblood for
+   anything that needs attention. Brass is for lines and highlights;
+   --brassInk is the darker brass that's readable as small text. */
+:root{
+  --ink:#1b1918; --paper:#faf8f4; --card:#fffdfa; --line:#e6dfd3;
+  --clay:#7b2230; --clayDim:#f3e0e1; --sage:#3e5a46; --sageDim:#d8e2da;
+  --amber:#8a6714; --muted:#6f675c; --brass:#a8843f; --brassInk:#7f6128;
+}
+/* the visible height: on phones 100vh runs under the browser toolbar */
+:root{--vh:100vh}
+@supports (height:100dvh){:root{--vh:100dvh}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:'Manrope',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+input,select,button{font-family:inherit}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--brass);outline-offset:1px}
+textarea:focus{outline:2px solid var(--brass);outline-offset:1px}
+/* in-table editable text: reads as plain text, box shows on hover/focus */
+.cellEdit{border:1px solid transparent;background:transparent}
+.cellEdit:hover{border-color:var(--line);background:#fff}
+.cellEdit:focus{border-color:var(--line);background:#fff}
+.cellEdit::placeholder{color:var(--muted)}
+.serif{font-family:'Cormorant Garamond','Iowan Old Style',Georgia,serif}
+/* scrolls (wheel / trackpad / touch) without showing a scrollbar */
+.noScrollbar{scrollbar-width:none}
+.noScrollbar::-webkit-scrollbar{display:none}
+/* page padding around the open tab — tighter on smaller screens so the
+   warehouse table fits beside the sidebar */
+.mainPad{padding:0 28px 16px}
+@media (max-width:1480px){.mainPad{padding:0 16px 16px}}
+/* top bar: page name left, the tab's search in the middle, its buttons right */
+.topBar{position:sticky;top:0;z-index:15;background:var(--paper);display:grid;
+  grid-template-columns:minmax(max-content,1fr) minmax(240px,600px) minmax(0,1fr);align-items:center;gap:20px;padding:14px 0}
+.slotSearch{display:flex;gap:8px;align-items:center;min-width:0}
+.slotActions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+@media (max-width:900px){.topBar{grid-template-columns:minmax(0,1fr) auto}.slotSearch{grid-column:1/-1;order:3}}
+.barSearch{background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236f675c' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M20 20l-4-4'/%3E%3C/svg%3E") no-repeat 12px 50%/16px}
+@keyframes slideIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes slideInRight{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+/* small things ease rather than snap: hovers and selected states, a tab
+   fading in when opened, dropdowns sliding in */
+button{transition:background-color .15s,border-color .15s,color .15s,opacity .15s}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}

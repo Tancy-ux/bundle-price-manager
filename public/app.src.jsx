@@ -115,6 +115,10 @@ function App() {
   const [excludedSkus, setExcludedSkus] = useState([]);
   const [excludedBundleNames, setExcludedBundleNames] = useState([]);
   const [tab, setTab] = useState("reorder");
+  // which Zoho Inventory table is open — picked from under it in the sidebar
+  const [zohoTable, setZohoTable] = useState("items");
+  // the top bar's search / buttons slots, filled by the open tab (see InBar)
+  const [barSlots, setBarSlots] = useState(null);
   // set when jumping from a bundle's component to Products, so it opens
   // pre-searched to that exact item instead of the full list
   const [productJumpQuery, setProductJumpQuery] = useState("");
@@ -140,18 +144,18 @@ function App() {
     excludedSkus: [],
     excludedBundleNames: [],
   });
-  // measure the sticky header+nav so each tab's own search/filter row can
-  // stick right below it too, instead of scrolling away with the list
-  const headerRef = useRef(null);
+  // the sticky top bar's height (TopBar reports it), so each tab's own
+  // filter row can stick right below it instead of scrolling away
   const [headerH, setHeaderH] = useState(0);
-  useEffect(() => {
-    if (!headerRef.current) return;
-    const measure = () =>
-      setHeaderH(headerRef.current.getBoundingClientRect().height);
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [ready, tab]);
+  // per-table counts for the sidebar's Zoho Inventory list
+  const zohoCounts = useMemo(() => {
+    const ws = reorder.warehouseStock;
+    return zohoTableCounts(
+      splitWarehouseTables(ws, products),
+      ws,
+      Object.values(reorder.items || {}).filter((r) => r.below).length,
+    );
+  }, [reorder, products]);
 
   useEffect(() => {
     (async () => {
@@ -627,171 +631,106 @@ function App() {
     null,
   );
 
+  const openTab = (k) => {
+    setTab(k);
+    if (k === "products") setProductJumpQuery("");
+    if (k === "worklist" || k === "bundles") setBundleJumpTarget(null);
+  };
+  const pageTitle =
+    tab === "reorder"
+      ? (ZOHO_TABLES.find(([k]) => k === zohoTable) || [, TAB_LABELS.reorder])[1]
+      : TAB_LABELS[tab];
+
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 60px" }}>
-      <div
-        ref={headerRef}
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 15,
-          background: "var(--paper)",
-          paddingTop: 26,
-          boxShadow: "0 6px 16px -12px rgba(0,0,0,.25)",
+    <div className="shell">
+      <Sidebar
+        tab={tab}
+        onTab={openTab}
+        groups={[
+          ["Inventory", [["reorder", reorderCount, true]]],
+          ["Catalog", [["bundles"], ["products"], ["whereused"]]],
+          [
+            "Needs attention",
+            [
+              ["worklist", staleList.length, true],
+              ["stock", oosList.length, true],
+              ["discontinued", discontinuedCount],
+              ["trash", trash.length],
+            ],
+          ],
+        ]}
+        sub={{
+          under: "reorder",
+          items: ZOHO_TABLES,
+          counts: zohoCounts,
+          value: zohoTable,
+          onPick: (k) => {
+            setZohoTable(k);
+            setTab("reorder");
+          },
         }}
       >
-        <header
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-end",
-            flexWrap: "wrap",
-            gap: 12,
-          }}
-        >
+        <div className="sbStats">
+          <b>{products.length}</b> products · <b>{bundles.length}</b> bundles
+          <div className={saving ? "busy" : "ok"}>
+            {saving ? "saving…" : "saved ✓"}
+          </div>
           <div>
-            <div
-              style={{
-                fontSize: 11,
-                letterSpacing: 3,
-                textTransform: "uppercase",
-                color: "var(--clay)",
-                fontWeight: 700,
-              }}
-            >
-              catalog ops · local
-            </div>
-            <h1
-              className="serif"
-              style={{
-                fontSize: 32,
-                margin: "6px 0 0",
-                fontWeight: 600,
-                letterSpacing: -0.5,
-              }}
-            >
-              Bundle Price Manager
-            </h1>
+            stock{" "}
+            {stockUpdatedAt ? `synced ${timeAgo(stockUpdatedAt)}` : "never synced"}
           </div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 14 }}>
-            <div
-              style={{
-                fontSize: 13,
-                color: "var(--muted)",
-                textAlign: "right",
-              }}
-            >
-              <div>
-                <b style={{ color: "var(--ink)" }}>{products.length}</b>{" "}
-                products ·{" "}
-                <b style={{ color: "var(--ink)" }}>{bundles.length}</b> bundles
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  marginTop: 2,
-                  color: saving ? "var(--amber)" : "var(--sage)",
-                }}
-              >
-                {saving ? "saving…" : "saved to disk ✓"}
-              </div>
-              <div
-                style={{ fontSize: 11, marginTop: 2, color: "var(--muted)" }}
-              >
-                stock{" "}
-                {stockUpdatedAt
-                  ? `synced ${timeAgo(stockUpdatedAt)}`
-                  : "never synced"}
-              </div>
-            </div>
-            <button
-              onClick={syncNow}
-              disabled={syncing || !syncEligible}
-              title={
-                !syncEligible
-                  ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h`
-                  : "Pull new products, new bundle shells, and refresh stock from Shopify"
-              }
-              style={{
-                ...btnSec,
-                opacity: syncing || !syncEligible ? 0.55 : 1,
-                cursor: syncing || !syncEligible ? "default" : "pointer",
-              }}
-            >
-              {syncing
-                ? "Syncing…"
-                : lastSyncAt
-                  ? `Sync with Shopify · synced ${timeAgo(lastSyncAt)}`
-                  : "Sync with Shopify"}
-            </button>
-          </div>
-        </header>
-        {/* GlobalSearch ("Search everything") is hidden for now — the component
-            is kept below; render it here again to bring it back */}
-        <nav
-          style={{
-            display: "flex",
-            gap: 2,
-            margin: "18px 0 0",
-            borderBottom: "1px solid var(--line)",
-            flexWrap: "wrap",
-          }}
+        </div>
+        <button
+          className="sbSync"
+          onClick={syncNow}
+          disabled={syncing || !syncEligible}
+          title={
+            !syncEligible
+              ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h`
+              : "Pull new products, new bundle shells, and refresh stock from Shopify"
+          }
         >
-          {[
-            [
-              "reorder",
-              `Zoho Inventory${reorderCount ? ` (${reorderCount})` : ""}`,
-            ],
-            ["bundles", "Bundles"],
-            ["products", "Products"],
-            [
-              "worklist",
-              `Needs updating${staleList.length ? ` (${staleList.length})` : ""}`,
-            ],
-            [
-              "discontinued",
-              `Discontinued${discontinuedCount ? ` (${discontinuedCount})` : ""}`,
-            ],
-            [
-              "stock",
-              `Out of stock${oosList.length ? ` (${oosList.length})` : ""}`,
-            ],
-            ["whereused", "In bundles"],
-            ["trash", `Trash${trash.length ? ` (${trash.length})` : ""}`],
-          ].map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => {
-                setTab(k);
-                if (k === "products") setProductJumpQuery("");
-                if (k === "worklist" || k === "bundles")
-                  setBundleJumpTarget(null);
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                padding: "10px 14px",
-                fontSize: 13.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                color:
-                  tab === k
-                    ? "var(--ink)"
-                    : (k === "worklist" && staleList.length) ||
-                        (k === "stock" && oosList.length)
-                      ? "var(--clay)"
-                      : "var(--muted)",
-                borderBottom: `2px solid ${tab === k ? "var(--clay)" : "transparent"}`,
-                marginBottom: -1,
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </div>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3" />
+            <path d="M18 3v4h-4M6 21v-4h4" />
+          </svg>
+          <span>
+            {syncing
+              ? "Syncing…"
+              : lastSyncAt
+                ? `Shopify · synced ${timeAgo(lastSyncAt)}`
+                : "Sync with Shopify"}
+          </span>
+        </button>
+      </Sidebar>
 
-      <div style={{ paddingTop: 18 }}>
+      {/* the open tab scrolls here, under the top bar; the sidebar stays put */}
+      <main
+        className="noScrollbar mainPad"
+        style={{ flex: 1, minWidth: 0, overflowY: "auto" }}
+      >
+        <BarSlots.Provider value={barSlots}>
+          <div>
+            <TopBar
+              crumb={tab === "reorder" ? "Zoho Inventory" : null}
+              title={pageTitle}
+              onHeight={setHeaderH}
+              onSlots={setBarSlots}
+            />
+            {/* tabs without a search of their own get "search everything" */}
+            {!["bundles", "products", "whereused", "reorder"].includes(tab) && (
+              <InBar slot="search" key={"search:" + tab}>
+                <GlobalSearch
+                  products={products}
+                  bundles={bundles}
+                  onJumpToProduct={jumpToProduct}
+                  onJumpToBundle={jumpToBundle}
+                />
+              </InBar>
+            )}
+
+      {/* keyed by tab so each one fades in when opened */}
+      <div key={tab} style={{ animation: "fadeIn .18s ease" }}>
         {toast && (
           <div
             style={{
@@ -803,7 +742,7 @@ function App() {
               background: "var(--ink)",
               color: "var(--paper)",
               padding: "10px 16px",
-              borderRadius: 8,
+              borderRadius: 4,
               fontSize: 13,
               fontWeight: 600,
               animation: "slideIn .2s ease",
@@ -823,7 +762,7 @@ function App() {
               background: "var(--ink)",
               color: "var(--paper)",
               padding: "8px 10px 8px 16px",
-              borderRadius: 10,
+              borderRadius: 6,
               fontSize: 13,
               display: "flex",
               alignItems: "center",
@@ -842,7 +781,7 @@ function App() {
                 color: "#fff",
                 border: "none",
                 padding: "6px 12px",
-                borderRadius: 7,
+                borderRadius: 4,
                 fontWeight: 600,
                 cursor: "pointer",
               }}
@@ -940,6 +879,8 @@ function App() {
           <Reorder
             doc={reorder}
             setDoc={setReorder}
+            table={zohoTable}
+            setTable={setZohoTable}
             stickyTop={headerH}
             flash={flash}
             products={products}
@@ -954,8 +895,300 @@ function App() {
           />
         )}
       </div>
+          </div>
+        </BarSlots.Provider>
+      </main>
     </div>
   );
+}
+
+// Zoho Inventory's tables, listed under it in the sidebar (the team's
+// /inventory page has no sidebar, so Reorder shows them as buttons there)
+const ZOHO_TABLES = [
+  ["items", "Items by warehouse"],
+  ["composites", "Composite items"],
+  ["marble", "Marble Atelier"],
+  ["reorder", "Reorder list"],
+  ["ceramitec", "Ceramitec bundles"],
+];
+
+// each tab's name: in the sidebar and as the page title
+const TAB_LABELS = {
+  reorder: "Zoho Inventory",
+  bundles: "Bundles",
+  products: "Products",
+  whereused: "In bundles",
+  worklist: "Needs updating",
+  stock: "Out of stock",
+  discontinued: "Discontinued",
+  trash: "Trash",
+};
+
+const NAV_ICONS = {
+  reorder: (
+    <>
+      <path d="M3 8l9-5 9 5v8l-9 5-9-5z" />
+      <path d="M3 8l9 5 9-5M12 13v8" />
+    </>
+  ),
+  bundles: (
+    <>
+      <rect x="3" y="3" width="8" height="8" rx="1.5" />
+      <rect x="13" y="3" width="8" height="8" rx="1.5" />
+      <rect x="3" y="13" width="8" height="8" rx="1.5" />
+      <rect x="13" y="13" width="8" height="8" rx="1.5" />
+    </>
+  ),
+  products: <path d="M4 7h16M4 12h16M4 17h10" />,
+  whereused: (
+    <>
+      <circle cx="11" cy="11" r="6" />
+      <path d="M20 20l-4.5-4.5" />
+    </>
+  ),
+  worklist: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </>
+  ),
+  stock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M6 18L18 6" />
+    </>
+  ),
+  discontinued: (
+    <>
+      <rect x="4" y="5" width="16" height="15" rx="2" />
+      <path d="M4 10h16" />
+    </>
+  ),
+  trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" />,
+};
+
+// the app's navigation, down the left so the whole height is left for the
+// open tab. groups: [heading, [[key, count, needsAttention]]]; sub lists
+// the Zoho tables under their tab. Collapses to icons (remembered in this
+// browser, and always on narrow screens); the footer (children) holds the
+// status and Sync button.
+const NARROW = "(max-width: 760px)";
+function Sidebar({ groups, tab, onTab, sub, children }) {
+  const [slim, setSlim] = useState(() => {
+    try {
+      return localStorage.getItem("sidebarSlim") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const toggle = () => {
+    try {
+      localStorage.setItem("sidebarSlim", slim ? "0" : "1");
+    } catch {}
+    setSlim(!slim);
+  };
+  const collapsed = slim || narrow;
+  // collapsed, the sub list (Zoho tables) opens as a pop-out beside the
+  // rail — hover or click its icon — so collapsing never changes the page
+  const [flyTop, setFlyTop] = useState(null); // px from the top, or null when shut
+  const flyClose = useRef(null);
+  const openFly = (wrap) => {
+    clearTimeout(flyClose.current);
+    setFlyTop(wrap.getBoundingClientRect().top);
+  };
+  const closeFlySoon = () => {
+    flyClose.current = setTimeout(() => setFlyTop(null), 160);
+  };
+  useEffect(() => {
+    if (!collapsed) setFlyTop(null);
+  }, [collapsed]);
+  useEffect(() => {
+    if (flyTop == null) return;
+    const away = (e) => !e.target.closest(".sbFlyWrap") && setFlyTop(null);
+    const esc = (e) => e.key === "Escape" && setFlyTop(null);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [flyTop]);
+  const subButtons = (k, after) =>
+    sub.items.map(([sk, slabel]) => (
+      <button
+        key={sk}
+        className={`sbItem${tab === k && sub.value === sk ? " on" : ""}`}
+        onClick={() => {
+          sub.onPick(sk);
+          if (after) after();
+        }}
+      >
+        <span className="sbLabel">{slabel}</span>
+        {sub.counts[sk] != null && (
+          <span className="sbSubCount">{sub.counts[sk]}</span>
+        )}
+      </button>
+    ));
+  return (
+    <aside className={`sidebar${collapsed ? " slim" : ""}`}>
+      <div className="sbBrand">
+        <div className="sbMark serif">B</div>
+        <div className="sbName serif">
+          Bundle Price Manager
+          <small>catalog ops</small>
+        </div>
+      </div>
+      {groups.map(([heading, items]) => (
+        <React.Fragment key={heading}>
+          <div className="sbGroup">{heading}</div>
+          {items.map(([k, n, hot]) => {
+            const label = TAB_LABELS[k];
+            const hasSub = sub && sub.under === k;
+            const item = (
+              <button
+                className={`sbItem${tab === k ? " on" : ""}${hot && n ? " dot" : ""}`}
+                onClick={(e) => {
+                  onTab(k);
+                  // only opens: on touch screens the tap's mouseenter has
+                  // already opened it, and a toggle would shut it again.
+                  // Picking a table, Escape or a click elsewhere closes it.
+                  if (hasSub && collapsed) openFly(e.currentTarget.parentElement);
+                }}
+                title={n ? `${label} (${n})` : label}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  {NAV_ICONS[k]}
+                </svg>
+                <span className="sbLabel">{label}</span>
+                {n ? (
+                  <span className={`sbCount${hot ? " hot" : ""}`}>{n}</span>
+                ) : null}
+              </button>
+            );
+            if (!hasSub) return <React.Fragment key={k}>{item}</React.Fragment>;
+            return (
+              <div
+                key={k}
+                className="sbFlyWrap"
+                onMouseEnter={collapsed ? (e) => openFly(e.currentTarget) : undefined}
+                onMouseLeave={collapsed ? closeFlySoon : undefined}
+              >
+                {item}
+                <div className="sbSub">{subButtons(k)}</div>
+                {collapsed && flyTop != null && (
+                  <div className="sbFly" style={{ top: flyTop }} aria-label={label}>
+                    <div className="sbFlyHead">{label}</div>
+                    {subButtons(k, () => setFlyTop(null))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </React.Fragment>
+      ))}
+      <div className="sbFoot">
+        {children}
+        {!narrow && (
+          <button className="sbCollapse" onClick={toggle}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+            <span>{slim ? "Expand sidebar" : "Collapse sidebar"}</span>
+          </button>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+// page name on the left, the open tab's search in the middle and its buttons
+// on the right. The tab fills those two through <InBar>, so its search state
+// stays its own. "/" from anywhere jumps to the search box.
+const BarSlots = React.createContext(null);
+function TopBar({ crumb, title, onHeight, onSlots }) {
+  const barRef = useRef(null);
+  const searchRef = useRef(null);
+  const actionsRef = useRef(null);
+  // report the bar's height, kept current as the tab fills its slots, the
+  // sidebar collapses, or the search wraps to its own row on narrow screens
+  useEffect(() => {
+    const el = barRef.current;
+    const measure = () => onHeight(el.getBoundingClientRect().height);
+    measure();
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(measure);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  useEffect(() => {
+    onSlots({ search: searchRef.current, actions: actionsRef.current });
+    const onKey = (e) => {
+      const t = e.target;
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable) return;
+      // not behind an open dialog or side panel
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const box = searchRef.current && searchRef.current.querySelector("input");
+      if (!box) return;
+      e.preventDefault();
+      box.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <div ref={barRef} className="topBar">
+      <div style={{ minWidth: 0 }}>
+        {crumb && (
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: 2.2,
+              textTransform: "uppercase",
+              color: "var(--brassInk)",
+              marginBottom: 2,
+            }}
+          >
+            {crumb}
+          </div>
+        )}
+        <h1
+          className="serif"
+          style={{
+            fontSize: 32,
+            margin: 0,
+            fontWeight: 600,
+            lineHeight: 1.05,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {title}
+        </h1>
+      </div>
+      <div ref={searchRef} className="slotSearch" />
+      <div ref={actionsRef} className="slotActions" />
+    </div>
+  );
+}
+// renders its children into the top bar's "search" or "actions" slot
+function InBar({ slot, children }) {
+  const slots = React.useContext(BarSlots);
+  return slots && slots[slot]
+    ? ReactDOM.createPortal(children, slots[slot])
+    : null;
 }
 
 // in-app replacement for window.confirm — a centered modal matching the rest of
@@ -989,7 +1222,7 @@ function ConfirmModal({ title, detail, confirmLabel, danger, onClose }) {
         aria-modal="true"
         style={{
           background: "var(--card)",
-          borderRadius: 14,
+          borderRadius: 6,
           padding: "22px 24px",
           maxWidth: 380,
           width: "100%",
@@ -998,7 +1231,7 @@ function ConfirmModal({ title, detail, confirmLabel, danger, onClose }) {
       >
         <h3
           className="serif"
-          style={{ margin: "0 0 8px", fontSize: 19, fontWeight: 600 }}
+          style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 600 }}
         >
           {title}
         </h3>
@@ -1057,16 +1290,49 @@ function GlobalSearch({ products, bundles, onJumpToProduct, onJumpToBundle }) {
     setQ("");
   }
 
+  // sits in the top bar, so the results drop down over the page; a click
+  // anywhere else hides them (the text stays, focusing it shows them again)
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => !boxRef.current.contains(e.target) && setOpen(false);
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
   return (
-    <div>
+    <div
+      ref={boxRef}
+      style={{ position: "relative", flex: 1, minWidth: 0, display: "flex" }}
+    >
       <input
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => e.key === "Escape" && setQ("")}
         placeholder="Search everything — products & bundles…"
-        style={search}
+        className="barSearch"
+        style={barSearch}
       />
-      {q.trim() && (
-        <div style={{ marginTop: 8 }}>
+      {open && q.trim() && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            right: 0,
+            zIndex: 40,
+            background: "var(--paper)",
+            border: "1px solid var(--line)",
+            borderRadius: 6,
+            padding: "10px 10px 0",
+            boxShadow: "0 12px 30px -12px rgba(0,0,0,.3)",
+            animation: "slideIn .15s ease",
+          }}
+        >
           {results.length === 0 ? (
             <p style={note}>No matches.</p>
           ) : (
@@ -1079,7 +1345,7 @@ function GlobalSearch({ products, bundles, onJumpToProduct, onJumpToBundle }) {
                 style={{
                   background: "var(--card)",
                   border: "1px solid var(--line)",
-                  borderRadius: 12,
+                  borderRadius: 6,
                   overflow: "hidden",
                   maxHeight: 300,
                   overflowY: "auto",
@@ -1234,9 +1500,9 @@ function Worklist({
             fontSize: 12.5,
             fontWeight: 600,
             cursor: "pointer",
-            border: `1px solid ${view === k ? "var(--clay)" : "var(--line)"}`,
-            background: view === k ? "var(--clayDim)" : "#fff",
-            color: view === k ? "var(--clay)" : "var(--muted)",
+            border: `1px solid ${view === k ? "var(--ink)" : "var(--line)"}`,
+            background: view === k ? "var(--ink)" : "#fff",
+            color: view === k ? "var(--paper)" : "var(--muted)",
           }}
         >
           {label}
@@ -1259,7 +1525,7 @@ function Worklist({
             style={{
               background: "var(--card)",
               border: "1px solid var(--line)",
-              borderRadius: 12,
+              borderRadius: 6,
               overflow: "hidden",
             }}
           >
@@ -1353,7 +1619,7 @@ function Worklist({
             padding: "60px 20px",
             background: "var(--card)",
             border: "1px solid var(--line)",
-            borderRadius: 14,
+            borderRadius: 6,
           }}
         >
           <div
@@ -1371,7 +1637,7 @@ function Worklist({
           >
             ✓
           </div>
-          <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+          <h2 className="serif" style={{ fontSize: 26, margin: "0 0 6px" }}>
             Everything's in sync
           </h2>
           <p
@@ -1421,7 +1687,7 @@ function Worklist({
             background: "var(--clayDim)",
             color: "var(--clay)",
             padding: "10px 14px",
-            borderRadius: 8,
+            borderRadius: 4,
             fontSize: 13,
             fontWeight: 600,
             marginBottom: 12,
@@ -1435,7 +1701,7 @@ function Worklist({
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflow: "hidden",
         }}
       >
@@ -1811,17 +2077,20 @@ function Bundles({
           paddingBottom: 6,
         }}
       >
-        <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+        <InBar slot="search">
           <input
             placeholder="Search bundles…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            style={search}
+            className="barSearch"
+            style={barSearch}
           />
+        </InBar>
+        <InBar slot="actions">
           <button onClick={add} style={btnPri}>
-            + New
+            + New bundle
           </button>
-        </div>
+        </InBar>
         <div
           style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}
         >
@@ -1850,9 +2119,9 @@ function Bundles({
                   fontSize: 12.5,
                   fontWeight: 600,
                   cursor: "pointer",
-                  border: `1px solid ${show === k ? "var(--clay)" : "var(--line)"}`,
-                  background: show === k ? "var(--clayDim)" : "#fff",
-                  color: show === k ? "var(--clay)" : "var(--muted)",
+                  border: `1px solid ${show === k ? "var(--ink)" : "var(--line)"}`,
+                  background: show === k ? "var(--ink)" : "#fff",
+                  color: show === k ? "var(--paper)" : "var(--muted)",
                 }}
               >
                 {label}
@@ -1892,7 +2161,7 @@ function Bundles({
             padding: "36px 20px",
             background: "var(--card)",
             border: "1px dashed var(--line)",
-            borderRadius: 12,
+            borderRadius: 6,
             color: "var(--muted)",
           }}
         >
@@ -1982,7 +2251,7 @@ function Bundles({
                 background: "var(--card)",
                 border: `1px solid ${c.stale ? "var(--clay)" : "var(--line)"}`,
                 borderLeft: `3px solid ${c.stale ? "var(--clay)" : "var(--sage)"}`,
-                borderRadius: 10,
+                borderRadius: 6,
                 overflow: "hidden",
               }}
             >
@@ -2280,7 +2549,7 @@ function BundleEditor({
                 style={{
                   width: 46,
                   padding: "6px",
-                  borderRadius: 7,
+                  borderRadius: 4,
                   border: "1px solid var(--line)",
                   fontSize: 13,
                   textAlign: "center",
@@ -2369,7 +2638,7 @@ function BundleEditor({
       <div
         style={{
           background: c.stale ? "var(--clayDim)" : "var(--sageDim)",
-          borderRadius: 9,
+          borderRadius: 4,
           padding: "12px 14px",
           display: "flex",
           flexDirection: "column",
@@ -2428,7 +2697,7 @@ function BundleEditor({
                   background: "var(--ink)",
                   color: "var(--paper)",
                   border: "none",
-                  borderRadius: 7,
+                  borderRadius: 4,
                   padding: "5px 10px",
                   fontSize: 11.5,
                   fontWeight: 600,
@@ -2512,7 +2781,7 @@ function BundleEditor({
           alignItems: "center",
           gap: 8,
           background: b.skipped ? "var(--sageDim)" : "transparent",
-          borderRadius: 8,
+          borderRadius: 4,
           padding: b.skipped ? "8px 12px" : "0",
         }}
       >
@@ -2549,7 +2818,7 @@ function BundleEditor({
           alignItems: "center",
           gap: 8,
           background: b.active === false ? "var(--clayDim)" : "transparent",
-          borderRadius: 8,
+          borderRadius: 4,
           padding: b.active === false ? "8px 12px" : "0",
         }}
       >
@@ -2596,7 +2865,7 @@ function BundleEditor({
             border: "1px solid var(--line)",
             color: "var(--muted)",
             padding: "6px 12px",
-            borderRadius: 7,
+            borderRadius: 4,
             fontSize: 12.5,
             fontWeight: 600,
             cursor: "pointer",
@@ -2612,7 +2881,7 @@ function BundleEditor({
             border: "none",
             color: "var(--clay)",
             padding: "6px 10px",
-            borderRadius: 7,
+            borderRadius: 4,
             fontSize: 12.5,
             fontWeight: 600,
             cursor: "pointer",
@@ -2683,7 +2952,7 @@ function QuickAdd({ products, byId, onAdd }) {
           style={{
             width: 52,
             padding: "9px 8px",
-            borderRadius: 8,
+            borderRadius: 4,
             border: "1px solid var(--line)",
             fontSize: 14,
             textAlign: "center",
@@ -2700,7 +2969,7 @@ function QuickAdd({ products, byId, onAdd }) {
           style={{
             flex: 1,
             padding: "9px 12px",
-            borderRadius: 8,
+            borderRadius: 4,
             border: "1px solid var(--clay)",
             fontSize: 14,
             background: "#fff",
@@ -2718,7 +2987,7 @@ function QuickAdd({ products, byId, onAdd }) {
             marginTop: 4,
             background: "#fff",
             border: "1px solid var(--line)",
-            borderRadius: 10,
+            borderRadius: 6,
             boxShadow: "0 8px 24px rgba(0,0,0,.12)",
             overflow: "hidden",
           }}
@@ -2955,17 +3224,20 @@ function Products({
           paddingBottom: 6,
         }}
       >
-        <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
+        <InBar slot="search">
           <input
             placeholder="Search products…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            style={search}
+            className="barSearch"
+            style={barSearch}
           />
+        </InBar>
+        <InBar slot="actions">
           <button onClick={add} style={btnPri}>
-            + New
+            + New product
           </button>
-        </div>
+        </InBar>
         <div
           style={{
             display: "flex",
@@ -3001,9 +3273,9 @@ function Products({
                   fontSize: 12.5,
                   fontWeight: 600,
                   cursor: "pointer",
-                  border: `1px solid ${usageFilter === k ? "var(--clay)" : "var(--line)"}`,
-                  background: usageFilter === k ? "var(--clayDim)" : "#fff",
-                  color: usageFilter === k ? "var(--clay)" : "var(--muted)",
+                  border: `1px solid ${usageFilter === k ? "var(--ink)" : "var(--line)"}`,
+                  background: usageFilter === k ? "var(--ink)" : "#fff",
+                  color: usageFilter === k ? "var(--paper)" : "var(--muted)",
                 }}
               >
                 {label}
@@ -3026,7 +3298,7 @@ function Products({
             padding: "36px 20px",
             background: "var(--card)",
             border: "1px dashed var(--line)",
-            borderRadius: 12,
+            borderRadius: 6,
             color: "var(--muted)",
             marginBottom: 8,
           }}
@@ -3062,7 +3334,7 @@ function Products({
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflow: "hidden",
         }}
       >
@@ -3357,14 +3629,17 @@ function WhereUsed({ bundles, products, compute }) {
 
   return (
     <div>
-      <input
-        placeholder="Search a product — e.g. dot pink — to see its bundles…"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        style={search}
-      />
+      <InBar slot="search">
+        <input
+          placeholder="Search a product — e.g. dot pink — to see its bundles…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          className="barSearch"
+          style={barSearch}
+        />
+      </InBar>
       {!q.trim() && (
-        <p style={{ ...note, marginTop: 14 }}>
+        <p style={{ ...note, marginTop: 4 }}>
           Type a product name or SKU. Every bundle that contains a matching
           product is listed below. Products that aren't in any bundle won't show
           up here.
@@ -3377,7 +3652,7 @@ function WhereUsed({ bundles, products, compute }) {
             padding: "36px 20px",
             background: "var(--card)",
             border: "1px dashed var(--line)",
-            borderRadius: 12,
+            borderRadius: 6,
             color: "var(--muted)",
             marginTop: 14,
           }}
@@ -3411,7 +3686,7 @@ function WhereUsed({ bundles, products, compute }) {
               style={{
                 background: "var(--card)",
                 border: "1px solid var(--line)",
-                borderRadius: 12,
+                borderRadius: 6,
                 overflow: "hidden",
               }}
             >
@@ -3648,7 +3923,7 @@ function StockIssues({
           marginTop: key === "products" && oosList.length ? 10 : 0,
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 10,
+          borderRadius: 6,
           cursor: "pointer",
           textAlign: "left",
         }}
@@ -3656,7 +3931,7 @@ function StockIssues({
         <span style={{ color: "var(--muted)", fontSize: 12, width: 12 }}>
           {openSec[key] ? "▾" : "▸"}
         </span>
-        <span className="serif" style={{ flex: 1, fontSize: 17 }}>
+        <span className="serif" style={{ flex: 1, fontSize: 20 }}>
           {label}
         </span>
         <span
@@ -3744,9 +4019,9 @@ function StockIssues({
               fontSize: 12.5,
               fontWeight: 600,
               cursor: "pointer",
-              border: `1px solid ${view === k ? "var(--clay)" : "var(--line)"}`,
-              background: view === k ? "var(--clayDim)" : "#fff",
-              color: view === k ? "var(--clay)" : "var(--muted)",
+              border: `1px solid ${view === k ? "var(--ink)" : "var(--line)"}`,
+              background: view === k ? "var(--ink)" : "#fff",
+              color: view === k ? "var(--paper)" : "var(--muted)",
             }}
           >
             {label} ({viewCount(k)})
@@ -3760,7 +4035,7 @@ function StockIssues({
         title="Refreshes stock, then downloads a Word doc"
         style={{
           padding: "7px 12px",
-          borderRadius: 8,
+          borderRadius: 4,
           border: "1px solid var(--line)",
           background: "var(--card)",
           fontSize: 12.5,
@@ -3788,7 +4063,7 @@ function StockIssues({
             padding: "60px 20px",
             background: "var(--card)",
             border: "1px solid var(--line)",
-            borderRadius: 14,
+            borderRadius: 6,
           }}
         >
           <div
@@ -3806,7 +4081,7 @@ function StockIssues({
           >
             ✓
           </div>
-          <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+          <h2 className="serif" style={{ fontSize: 26, margin: "0 0 6px" }}>
             Nothing out of stock
           </h2>
           <p
@@ -3851,7 +4126,7 @@ function StockIssues({
                   background: "var(--card)",
                   border: "1px solid var(--clay)",
                   borderLeft: "3px solid var(--clay)",
-                  borderRadius: 10,
+                  borderRadius: 6,
                   overflow: "hidden",
                 }}
               >
@@ -3943,7 +4218,7 @@ function StockIssues({
                 background: "var(--card)",
                 border: "1px solid var(--line)",
                 borderLeft: "3px solid var(--clay)",
-                borderRadius: 10,
+                borderRadius: 6,
                 cursor: "pointer",
                 textAlign: "left",
               }}
@@ -4022,10 +4297,10 @@ function Discontinued({
           padding: "60px 20px",
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 14,
+          borderRadius: 6,
         }}
       >
-        <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+        <h2 className="serif" style={{ fontSize: 26, margin: "0 0 6px" }}>
           Nothing discontinued
         </h2>
         <p
@@ -4088,7 +4363,7 @@ function Discontinued({
             style={{
               background: "var(--card)",
               border: "1px solid var(--line)",
-              borderRadius: 12,
+              borderRadius: 6,
               overflow: "hidden",
             }}
           >
@@ -4112,7 +4387,7 @@ function Discontinued({
             style={{
               background: "var(--card)",
               border: "1px solid var(--line)",
-              borderRadius: 12,
+              borderRadius: 6,
               overflow: "hidden",
             }}
           >
@@ -4136,10 +4411,49 @@ function Discontinued({
 // workflow); "Expected by" and Notes are typed here and never overwritten by
 // a refresh. Rows are never deleted: once an item is back above its reorder
 // level it moves to "Restocked", notes intact. See lib/zohoReorder.js.
-function Reorder({ doc, setDoc, stickyTop, flash, products }) {
+// Zoho stock per warehouse (see fetchWarehouseStock in lib/zohoReorder.js),
+// split into the warehouse tables. Items are cut down to SKUs that are live
+// on Shopify (active in the catalog); composites are every active one in
+// Zoho; the Marble Atelier line gets its own table, out of both.
+// how many rows each Zoho table holds (warehouse ones only once pulled)
+function zohoTableCounts(tables, ws, below) {
+  return {
+    ...(ws
+      ? {
+          items: tables.items.length,
+          composites: tables.composites.length,
+          marble: tables.marble.length,
+        }
+      : {}),
+    reorder: below,
+    ceramitec: CERAMITEC_BUNDLE_SKUS.length,
+  };
+}
+
+function splitWarehouseTables(ws, products) {
+  const t = { items: [], composites: [], marble: [] };
+  if (!ws) return t;
+  const shopifySkus = new Set(
+    (products || [])
+      .filter((p) => p.active !== false && p.sku)
+      .map((p) => normSku(p.sku)),
+  );
+  for (const r of ws.items)
+    if (shopifySkus.has(normSku(r.sku)))
+      t[isZohoMarble(r.name) ? "marble" : "items"].push(r);
+  for (const r of ws.composites)
+    t[isZohoMarble(r.name) ? "marble" : "composites"].push(r);
+  return t;
+}
+
+// table / setTable: given when the sidebar picks the table (main app);
+// without them (the /inventory page) it keeps its own and shows buttons
+function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, setTable: setTableProp }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [table, setTable] = useState("items"); // items | composites | marble | reorder | ceramitec
+  const [ownTable, setOwnTable] = useState("items"); // items | composites | marble | reorder | ceramitec
+  const table = tableProp || ownTable;
+  const setTable = setTableProp || setOwnTable;
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
@@ -4255,30 +4569,11 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
     [products, q],
   );
 
-  // stock per warehouse (see fetchWarehouseStock in lib/zohoReorder.js).
-  // Items are cut down to SKUs that are live on Shopify (active in the
-  // catalog); composites are every active one in Zoho.
   const ws = doc.warehouseStock;
-  const shopifySkus = useMemo(
-    () =>
-      new Set(
-        (products || [])
-          .filter((p) => p.active !== false && p.sku)
-          .map((p) => normSku(p.sku)),
-      ),
-    [products],
+  const whTables = useMemo(
+    () => splitWarehouseTables(ws, products),
+    [ws, products],
   );
-  // the Marble Atelier line gets its own table, out of Items / Composites
-  const whTables = useMemo(() => {
-    const t = { items: [], composites: [], marble: [] };
-    if (!ws) return t;
-    for (const r of ws.items)
-      if (shopifySkus.has(normSku(r.sku)))
-        t[isZohoMarble(r.name) ? "marble" : "items"].push(r);
-    for (const r of ws.composites)
-      t[isZohoMarble(r.name) ? "marble" : "composites"].push(r);
-    return t;
-  }, [ws, shopifySkus]);
   // Zoho's numbers for the Ceramitec sets, by SKU — most are composites, so
   // those win over a plain item with the same SKU
   const zohoBySku = useMemo(() => {
@@ -4356,7 +4651,8 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
     }
   };
 
-  // sticky header: which table, then search/vendor/refresh, then that
+  // search/vendor and refresh go in the top bar; the sticky header holds
+  // which table (only without the sidebar, which lists them), then that
   // table's own filters (passed in — the warehouse tables bring their own)
   const headerWith = (filters) => (
     <div
@@ -4366,42 +4662,36 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
         top: stickyTop || 0,
         zIndex: 10,
         background: "var(--paper)",
-        paddingTop: 2,
-        paddingBottom: 10,
+        paddingTop: filters ? 2 : 0,
+        paddingBottom: filters ? 10 : 0,
       }}
     >
+      {!tableProp && (
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {[
-          ["items", `Items by warehouse${ws ? ` (${whTables.items.length})` : ""}`],
-          ["composites", `Composite items${ws ? ` (${whTables.composites.length})` : ""}`],
-          ["marble", `Marble Atelier${ws ? ` (${whTables.marble.length})` : ""}`],
-          ["reorder", `Reorder list (${counts.below})`],
-          ["ceramitec", `Ceramitec bundles (${CERAMITEC_BUNDLE_SKUS.length})`],
-        ].map(([k, label]) => (
-          <button key={k} onClick={() => setTable(k)} style={tableTab(table === k)}>
-            {label}
-          </button>
-        ))}
+        {ZOHO_TABLES.map(([k, label]) => {
+          const n = zohoTableCounts(whTables, ws, counts.below)[k];
+          return (
+            <button key={k} onClick={() => setTable(k)} style={tableTab(table === k)}>
+              {label}
+              {n != null && ` (${n})`}
+            </button>
+          );
+        })}
       </div>
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
+      )}
+      <InBar slot="search">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder={table === "reorder" ? "Search name, SKU or notes…" : "Search name or SKU…"}
-          style={{ ...search, minWidth: 220 }}
+          className="barSearch"
+          style={barSearch}
         />
         {table === "reorder" && (
         <select
           value={vendor}
           onChange={(e) => setVendor(e.target.value)}
-          style={{ ...sel, padding: "9px 10px", fontSize: 14 }}
+          style={{ ...sel, padding: "10px 12px", fontSize: 14.5, borderRadius: 4 }}
         >
           <option value="all">All vendors</option>
           {vendors.map(([v, n]) => (
@@ -4411,6 +4701,8 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
           ))}
         </select>
         )}
+      </InBar>
+      <InBar slot="actions">
         <button
           onClick={refresh}
           disabled={refreshing || coolingDown}
@@ -4433,9 +4725,9 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
                 ? `Refresh from Zoho · ${timeAgo(doc.lastSyncAt)}`
                 : "Refresh from Zoho"}
         </button>
-      </div>
+      </InBar>
       {filters && (
-        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, marginTop: tableProp ? 0 : 10, flexWrap: "wrap" }}>
           {filters}
         </div>
       )}
@@ -4494,10 +4786,10 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
             padding: "60px 20px",
             background: "var(--card)",
             border: "1px solid var(--line)",
-            borderRadius: 14,
+            borderRadius: 6,
           }}
         >
-          <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+          <h2 className="serif" style={{ fontSize: 26, margin: "0 0 6px" }}>
             Not pulled from Zoho yet
           </h2>
           <p
@@ -4539,7 +4831,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products }) {
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflowX: "auto",
         }}
       >
@@ -4727,7 +5019,7 @@ function CeramitecBundles({ rows, manual, onSave, zoho }) {
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflowX: "auto",
         }}
       >
@@ -4877,7 +5169,7 @@ function WarehouseStock({ ws, rows, q, kind, headerWith, topOffset }) {
       display: "grid",
       // … warehouses · in transit · incoming · on hand · committed · available
       // wide enough for each heading on one line ("WARE INNOVATIONS ↕")
-      gridTemplateColumns: `minmax(200px,2fr) repeat(${whs.length}, minmax(128px,1fr)) ${WH_TOTALS_COLS}`,
+      gridTemplateColumns: `minmax(120px,2fr) repeat(${whs.length}, minmax(128px,1fr)) ${WH_TOTALS_COLS}`,
       gap: 10,
     }),
     [whs.length],
@@ -4936,7 +5228,7 @@ function WarehouseStock({ ws, rows, q, kind, headerWith, topOffset }) {
             padding: "60px 20px",
             background: "var(--card)",
             border: "1px solid var(--line)",
-            borderRadius: 14,
+            borderRadius: 6,
             color: "var(--muted)",
             lineHeight: 1.5,
           }}
@@ -5023,14 +5315,14 @@ function WarehouseStock({ ws, rows, q, kind, headerWith, topOffset }) {
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflow: "auto",
-          maxHeight: `calc(100vh - ${(topOffset || 0) + 16}px)`,
+          maxHeight: `calc(var(--vh) - ${(topOffset || 0) + 16}px)`,
         }}
       >
         {/* = the grid's own minimum (columns + gaps + row padding), so it
             only scrolls sideways when the screen really is narrower */}
-        <div style={{ minWidth: 200 + 472 + 6 * 10 + 32 + whs.length * 138 }}>
+        <div style={{ minWidth: 120 + 472 + 6 * 10 + 32 + whs.length * 138 }}>
           <div
             style={{
               position: "sticky",
@@ -5055,7 +5347,7 @@ function WarehouseStock({ ws, rows, q, kind, headerWith, topOffset }) {
             {th("Name", "name")}
             {whs.map((w) => (
               <React.Fragment key={w.id}>
-                {th(w.name, `wh:${w.id}`, "On hand here, with committed under it — click to sort")}
+                {th(w.name, `wh:${w.id}`, "On hand here, with committed (on sales orders, not shipped yet) under it — click to sort")}
               </React.Fragment>
             ))}
             {th("In transit", "transit", "On a transfer between your warehouses, not received yet — click a TO to see it — click to sort")}
@@ -5174,7 +5466,7 @@ function DocPanel({ ws, kind, doc, fromId, onClose }) {
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", color: isTo ? "var(--plum)" : "#a8401f" }}>
           {isTo ? "Transfer order · in transit" : `Purchase order${doc.status ? ` · ${doc.status.replace(/_/g, " ")}` : ""}`}
         </div>
-        <h3 className="serif" style={{ margin: "2px 0 10px", fontSize: 22, fontWeight: 600 }}>
+        <h3 className="serif" style={{ margin: "2px 0 10px", fontSize: 26, fontWeight: 600 }}>
           {isTo ? `TO ${doc.number}` : doc.number}
         </h3>
         {isTo ? (
@@ -5185,7 +5477,7 @@ function DocPanel({ ws, kind, doc, fromId, onClose }) {
                 alignItems: "center",
                 gap: 10,
                 padding: "10px 14px",
-                borderRadius: 10,
+                borderRadius: 6,
                 background: "var(--paper)",
                 fontSize: 14,
                 fontWeight: 600,
@@ -5221,7 +5513,7 @@ function DocPanel({ ws, kind, doc, fromId, onClose }) {
         <div style={{ fontSize: 13, margin: "14px 0 6px", fontWeight: 600 }}>
           {total} {isTo ? "on the way" : "still to come"}, {doc.lines.length} item{doc.lines.length === 1 ? "" : "s"}
         </div>
-        <div style={{ border: "1px solid var(--line)", borderRadius: 10 }}>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 6 }}>
           <div
             style={{
               ...poGrid,
@@ -5303,7 +5595,7 @@ const whTile = (on) => ({
   gap: 6,
   padding: "6px 12px",
   cursor: "pointer",
-  borderRadius: 8,
+  borderRadius: 4,
   fontSize: 13,
   fontWeight: 500,
   background: on ? "var(--card)" : "transparent",
@@ -5365,7 +5657,7 @@ const WarehouseRow = React.memo(function WarehouseRow({ r, whs, grid, pos, tos, 
           <div key={w.id} style={midCell}>
             <div style={{ color: whNum(h) }}>{dash(h)}</div>
             {c !== 0 && (
-              <div style={{ fontSize: 11.5, color: "var(--amber)" }}>{c} committed</div>
+              <div style={{ fontSize: 11.5, color: "var(--amber)" }} title="On sales orders, not shipped yet">{c} committed</div>
             )}
           </div>
         );
@@ -5487,7 +5779,7 @@ function QtyCell({ value, onSave }) {
         textAlign: "center",
         fontSize: 14,
         padding: "5px 8px",
-        borderRadius: 7,
+        borderRadius: 4,
         fontFamily: "inherit",
         color: "var(--ink)",
       }}
@@ -5527,7 +5819,7 @@ function NotesCell({ value, onSave }) {
         lineHeight: 1.4,
         padding: "5px 8px",
         width: "100%",
-        borderRadius: 7,
+        borderRadius: 4,
         resize: "none",
         overflow: "hidden",
         fontFamily: "inherit",
@@ -5627,10 +5919,10 @@ function Trash({ trash, onRestore, onDelete, onEmpty }) {
           padding: "60px 20px",
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 14,
+          borderRadius: 6,
         }}
       >
-        <h2 className="serif" style={{ fontSize: 22, margin: "0 0 6px" }}>
+        <h2 className="serif" style={{ fontSize: 26, margin: "0 0 6px" }}>
           Trash is empty
         </h2>
         <p
@@ -5674,7 +5966,7 @@ function Trash({ trash, onRestore, onDelete, onEmpty }) {
         style={{
           background: "var(--card)",
           border: "1px solid var(--line)",
-          borderRadius: 12,
+          borderRadius: 6,
           overflow: "hidden",
         }}
       >
@@ -5723,7 +6015,7 @@ const btnPri = {
   color: "var(--paper)",
   border: "none",
   padding: "9px 15px",
-  borderRadius: 8,
+  borderRadius: 4,
   fontSize: 13,
   fontWeight: 600,
   cursor: "pointer",
@@ -5733,7 +6025,7 @@ const btnPri = {
 // than catPill so it doesn't read as one more filter
 const tableTab = (on) => ({
   padding: "7px 14px",
-  borderRadius: 9,
+  borderRadius: 4,
   fontSize: 13.5,
   fontWeight: 600,
   cursor: "pointer",
@@ -5748,16 +6040,16 @@ const catPill = (on) => ({
   fontWeight: 600,
   cursor: "pointer",
   textTransform: "capitalize",
-  border: `1px solid ${on ? "var(--sage)" : "var(--line)"}`,
-  background: on ? "var(--sageDim)" : "#fff",
-  color: on ? "var(--sage)" : "var(--muted)",
+  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
+  background: on ? "var(--ink)" : "#fff",
+  color: on ? "var(--paper)" : "var(--muted)",
 });
 const btnSec = {
   background: "#fff",
   color: "var(--ink)",
   border: "1px solid var(--line)",
   padding: "9px 15px",
-  borderRadius: 8,
+  borderRadius: 4,
   fontSize: 13,
   fontWeight: 600,
   cursor: "pointer",
@@ -5768,7 +6060,7 @@ const btnFix = {
   color: "#fff",
   border: "none",
   padding: "7px 10px",
-  borderRadius: 7,
+  borderRadius: 4,
   fontSize: 12.5,
   fontWeight: 600,
   cursor: "pointer",
@@ -5781,13 +6073,15 @@ const xBtn = {
   fontSize: 13,
   padding: 4,
 };
-const search = {
+// the top bar's search box — use with className="barSearch", which adds the
+// white background with the magnifier icon
+const barSearch = {
   flex: 1,
-  padding: "9px 12px",
-  borderRadius: 8,
+  minWidth: 0,
+  padding: "10px 14px 10px 36px",
+  borderRadius: 4,
   border: "1px solid var(--line)",
-  fontSize: 14,
-  background: "#fff",
+  fontSize: 14.5,
 };
 const note = { fontSize: 12.5, color: "var(--muted)", margin: "0 0 14px" };
 const lbl = {
@@ -5800,7 +6094,7 @@ const lbl = {
 };
 const inp = {
   padding: "8px 10px",
-  borderRadius: 7,
+  borderRadius: 4,
   border: "1px solid var(--line)",
   fontSize: 14,
   fontWeight: 400,
@@ -5808,7 +6102,7 @@ const inp = {
 };
 const sel = {
   padding: "7px 9px",
-  borderRadius: 7,
+  borderRadius: 4,
   border: "1px solid var(--line)",
   background: "#fff",
   fontSize: 13,
@@ -5883,8 +6177,8 @@ function InventoryApp() {
     setToast(m);
     setTimeout(() => setToast(null), 2600);
   };
-  const headerRef = useRef(null);
   const [headerH, setHeaderH] = useState(0);
+  const [barSlots, setBarSlots] = useState(null);
   // catalog products — only for the Ceramitec bundles' Shopify stock
   const [products, setProducts] = useState([]);
   useEffect(() => {
@@ -5897,23 +6191,15 @@ function InventoryApp() {
       .then((d) => setProducts((d && d.products) || []))
       .catch(() => {});
   }, []);
-  useEffect(() => {
-    if (headerRef.current) setHeaderH(headerRef.current.getBoundingClientRect().height);
-  }, [doc]);
-
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 60px" }}>
-      <div
-        ref={headerRef}
-        style={{ position: "sticky", top: 0, zIndex: 20, background: "var(--paper)", padding: "26px 0 14px" }}
-      >
-        <div style={{ fontSize: 11, letterSpacing: 3, textTransform: "uppercase", color: "var(--clay)", fontWeight: 700 }}>
-          Ware Innovations
-        </div>
-        <h1 className="serif" style={{ fontSize: 32, margin: "6px 0 0", fontWeight: 600, letterSpacing: -0.5 }}>
-          Zoho Inventory
-        </h1>
-      </div>
+    <BarSlots.Provider value={barSlots}>
+    <div className="mainPad">
+      <TopBar
+        crumb="Ware Innovations"
+        title="Zoho Inventory"
+        onHeight={setHeaderH}
+        onSlots={setBarSlots}
+      />
       {!doc ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Loading…</div>
       ) : (
@@ -5936,7 +6222,7 @@ function InventoryApp() {
             background: "var(--ink)",
             color: "var(--paper)",
             padding: "10px 16px",
-            borderRadius: 8,
+            borderRadius: 4,
             fontSize: 13,
             fontWeight: 600,
           }}
@@ -5945,6 +6231,7 @@ function InventoryApp() {
         </div>
       )}
     </div>
+    </BarSlots.Provider>
   );
 }
 

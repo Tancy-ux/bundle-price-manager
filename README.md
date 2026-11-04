@@ -30,6 +30,18 @@ open while you use it. To stop, press `Ctrl+C` in the terminal.
 Every change you make autosaves to `data/data.json`. A rolling backup of the
 last 20 saves is kept in `data/backups/` automatically.
 
+### Changing the app's code
+
+The app is written in `public/app.src.jsx`; the browser runs the compiled
+`public/app.js`. After editing the source, rebuild it:
+
+```
+npm run build
+```
+
+Colours, fonts and the top bar are in `public/theme.css` (shared with the
+team's `/inventory` page); the sidebar's styles are in `public/index.html`.
+
 ---
 
 ## Loading your catalog and bundles
