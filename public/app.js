@@ -5,6 +5,11 @@ const {
   useMemo,
   useRef
 } = React;
+
+// the no-password view (/inventory): no Trash or Shopify pushes, and only prices
+// can be edited in the catalog. This only tidies the screen; middleware.js and
+// lib/teamRules.js enforce the limits.
+const IS_TEAM = window.APP_VIEW === "team";
 const money = n => isNaN(n) || n == null ? "—" : new Intl.NumberFormat(undefined, {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2
@@ -101,7 +106,10 @@ async function apiPutDiff(diff) {
   const r = await fetch("/api/data", {
     method: "PUT",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(IS_TEAM ? {} : {
+        "X-App-View": "admin"
+      })
     },
     body: JSON.stringify(diff)
   });
@@ -224,6 +232,10 @@ function App() {
         setExcludedSkus(merged.excludedSkus);
         setExcludedBundleNames(merged.excludedBundleNames);
         if (d.lastSyncAt !== undefined) setLastSyncAt(d.lastSyncAt || null);
+      } else if (res && res.signin) {
+        location.assign("/login");
+      } else if (res && res.error) {
+        flash(res.error);
       }
     }).catch(() => {
       if (!cancel) {
@@ -281,7 +293,7 @@ function App() {
 
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
-  // Throttled server-side to once/4h; syncEligible below mirrors that for the UI.
+  // Throttled server-side to once/2h; syncEligible below mirrors that for the UI.
   async function syncNow() {
     setSyncing(true);
     try {
@@ -317,11 +329,11 @@ function App() {
       setSyncing(false);
     }
   }
-  const SYNC_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+  const SYNC_COOLDOWN_MS = 2 * 60 * 60 * 1000;
   const syncEligible = !lastSyncAt || Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
 
   // out-of-stock .docx: pull the freshest stock first — a full Shopify sync
-  // when the 4h cooldown allows, otherwise whatever the server has now
+  // when the 2h cooldown allows, otherwise whatever the server has now
   // (the scheduled stock check keeps that current)
   async function exportOOS(atelier) {
     let d = syncEligible ? await syncNow() : null;
@@ -612,7 +624,7 @@ function App() {
   }, /*#__PURE__*/React.createElement(Sidebar, {
     tab: tab,
     onTab: openTab,
-    groups: [["Inventory", [["reorder", reorderCount, true]]], ["Catalog", [["bundles"], ["products"], ["whereused"]]], ["Needs attention", [["worklist", staleList.length, true], ["stock", oosList.length, true], ["discontinued", discontinuedCount], ["trash", trash.length]]]],
+    groups: [["Inventory", [["reorder", reorderCount, true]]], ["Catalog", [["bundles"], ["products"], ["whereused"]]], ["Needs attention", [["worklist", staleList.length, true], ["stock", oosList.length, true], ["discontinued", discontinuedCount], ...(IS_TEAM ? [] : [["trash", trash.length]])]]],
     sub: {
       under: "reorder",
       items: ZOHO_TABLES,
@@ -631,7 +643,7 @@ function App() {
     className: "sbSync",
     onClick: syncNow,
     disabled: syncing || !syncEligible,
-    title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h` : "Pull new products, new bundle shells, and refresh stock from Shopify"
+    title: !syncEligible ? `Last synced ${timeAgo(lastSyncAt)} — available once every 2h` : "Pull new products, new bundle shells, and refresh stock from Shopify"
   }, /*#__PURE__*/React.createElement("svg", {
     viewBox: "0 0 24 24",
     "aria-hidden": "true"
@@ -639,7 +651,30 @@ function App() {
     d: "M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3"
   }), /*#__PURE__*/React.createElement("path", {
     d: "M18 3v4h-4M6 21v-4h4"
-  })), /*#__PURE__*/React.createElement("span", null, syncing ? "Syncing…" : lastSyncAt ? `Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify"))), /*#__PURE__*/React.createElement("main", {
+  })), /*#__PURE__*/React.createElement("span", null, syncing ? "Syncing…" : lastSyncAt ? `Shopify · synced ${timeAgo(lastSyncAt)}` : "Sync with Shopify")), IS_TEAM && /*#__PURE__*/React.createElement("button", {
+    className: "sbSync",
+    title: "Admin sign in",
+    onClick: () => location.assign("/login")
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 24 24",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M14 4h5v16h-5M4 12h11M11 8l4 4-4 4"
+  })), /*#__PURE__*/React.createElement("span", null, "Admin sign in")), !IS_TEAM && location.protocol === "https:" && /*#__PURE__*/React.createElement("button", {
+    className: "sbSync",
+    title: "Sign out",
+    onClick: async () => {
+      await fetch("/api/logout", {
+        method: "POST"
+      }).catch(() => {});
+      location.replace("/login");
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 24 24",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M10 4H5v16h5M9 12h11M16 8l4 4-4 4"
+  })), /*#__PURE__*/React.createElement("span", null, "Sign out"))), /*#__PURE__*/React.createElement("main", {
     className: "noScrollbar mainPad",
     style: {
       flex: 1,
@@ -728,7 +763,7 @@ function App() {
     onDelete: deleteBundle,
     onPromote: promoteToProduct,
     onSkip: skipBundle,
-    pushPrice: pushPriceToShopify,
+    pushPrice: IS_TEAM ? null : pushPriceToShopify,
     onJumpToProduct: jumpToProduct,
     initialOpenBundle: bundleJumpTarget
   }), tab === "bundles" && /*#__PURE__*/React.createElement(Bundles, {
@@ -741,7 +776,7 @@ function App() {
     onPromote: promoteToProduct,
     onSkip: skipBundle,
     stickyTop: headerH,
-    pushPrice: pushPriceToShopify,
+    pushPrice: IS_TEAM ? null : pushPriceToShopify,
     onJumpToProduct: jumpToProduct,
     initialOpenBundle: bundleJumpTarget
   }), tab === "products" && /*#__PURE__*/React.createElement(Products, {
@@ -751,7 +786,7 @@ function App() {
     onDelete: deleteProduct,
     flash: flash,
     stickyTop: headerH,
-    pushPrice: pushPriceToShopify,
+    pushPrice: IS_TEAM ? null : pushPriceToShopify,
     initialQuery: productJumpQuery,
     onJumpToBundle: jumpToBundle
   }), tab === "whereused" && /*#__PURE__*/React.createElement(WhereUsed, {
@@ -768,7 +803,7 @@ function App() {
     onDelete: deleteBundle,
     onPromote: promoteToProduct,
     onSkip: skipBundle,
-    pushPrice: pushPriceToShopify,
+    pushPrice: IS_TEAM ? null : pushPriceToShopify,
     onJumpToProduct: jumpToProduct,
     onExport: exportOOS
   }), tab === "discontinued" && /*#__PURE__*/React.createElement(Discontinued, {
@@ -782,11 +817,10 @@ function App() {
     doc: reorder,
     setDoc: setReorder,
     table: zohoTable,
-    setTable: setZohoTable,
     stickyTop: headerH,
     flash: flash,
     products: products
-  }), tab === "trash" && /*#__PURE__*/React.createElement(Trash, {
+  }), tab === "trash" && !IS_TEAM && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
     onDelete: deleteFromTrash,
@@ -796,7 +830,7 @@ function App() {
 
 // Zoho Inventory's tables, listed under it in the sidebar (the team's
 // /inventory page has no sidebar, so Reorder shows them as buttons there)
-const ZOHO_TABLES = [["items", "Items by warehouse"], ["composites", "Composite items"], ["marble", "Marble Atelier"], ["reorder", "Reorder list"], ["ceramitec", "Ceramitec bundles"]];
+const ZOHO_TABLES = [["items", "Items by warehouse"], ["composites", "Composite items"], ["marble", "Marble Atelier"], ["reorder", "Reorder list"], ["ceramitec", "Ceramitec bundles"], ...(IS_TEAM ? [] : [["sales", "Sales"]])];
 
 // each tab's name: in the sidebar and as the page title
 const TAB_LABELS = {
@@ -1446,7 +1480,21 @@ function Worklist({
       color: h.kind === "product" ? "var(--sage)" : "var(--amber)",
       border: `1px solid ${h.kind === "product" ? "var(--sage)" : "var(--amber)"}`
     }
-  }, h.kind || "bundle")), /*#__PURE__*/React.createElement("span", {
+  }, h.kind || "bundle"), h.by === "team" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 6,
+      fontSize: 10,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+      padding: "1px 6px",
+      borderRadius: 999,
+      verticalAlign: "middle",
+      whiteSpace: "nowrap",
+      color: "var(--clay)",
+      border: "1px solid var(--clay)"
+    }
+  }, "Team edited")), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "var(--muted)"
@@ -1868,7 +1916,7 @@ function Bundles({
     style: barSearch
   })), /*#__PURE__*/React.createElement(InBar, {
     slot: "actions"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, !IS_TEAM && /*#__PURE__*/React.createElement("button", {
     onClick: add,
     style: btnPri
   }, "+ New bundle")), /*#__PURE__*/React.createElement("div", {
@@ -2132,6 +2180,7 @@ function Bundles({
         fontSize: 12
       }
     }, open ? "▾" : "▸")), /*#__PURE__*/React.createElement("button", {
+      disabled: IS_TEAM,
       onClick: () => onDelete(b),
       title: "Delete bundle",
       style: {
@@ -2198,6 +2247,7 @@ function BundleEditor({
     style: lbl
   }, "Name", /*#__PURE__*/React.createElement("input", {
     value: b.name,
+    disabled: IS_TEAM,
     onChange: e => update(b.id, {
       name: e.target.value
     }),
@@ -2206,6 +2256,7 @@ function BundleEditor({
     style: lbl
   }, "Bundle SKU", /*#__PURE__*/React.createElement("input", {
     value: b.sku,
+    disabled: IS_TEAM,
     onChange: e => update(b.id, {
       sku: e.target.value
     }),
@@ -2258,6 +2309,7 @@ function BundleEditor({
       type: "number",
       min: "1",
       value: it.qty,
+      disabled: IS_TEAM,
       onChange: e => {
         const items = [...b.items];
         items[idx] = {
@@ -2323,6 +2375,7 @@ function BundleEditor({
         color: "var(--muted)"
       }
     }, p && p.active ? money(p.price * it.qty) : "—"), /*#__PURE__*/React.createElement("button", {
+      disabled: IS_TEAM,
       onClick: () => update(b.id, {
         items: b.items.filter((_, i) => i !== idx)
       }),
@@ -2418,6 +2471,7 @@ function BundleEditor({
   }, /*#__PURE__*/React.createElement("input", {
     type: "checkbox",
     checked: !!b.giftIncluded,
+    disabled: IS_TEAM,
     onChange: e => update(b.id, {
       giftIncluded: e.target.checked
     }),
@@ -2450,6 +2504,7 @@ function BundleEditor({
     }
   }, "Note (optional)", /*#__PURE__*/React.createElement("textarea", {
     value: b.note || "",
+    disabled: IS_TEAM,
     onChange: e => update(b.id, {
       note: e.target.value
     }),
@@ -2483,6 +2538,7 @@ function BundleEditor({
       fontWeight: 600
     }
   }, "Skipped \u2014 kept out of \u201CNeeds updating\u201D. Won't be flagged even if the price differs.") : /*#__PURE__*/React.createElement("span", null, "Just one item + a box, or otherwise not worth syncing? Skip it to keep it off the worklist.")), /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: () => onSkip(b, !b.skipped),
     style: {
       ...btnSec,
@@ -2514,6 +2570,7 @@ function BundleEditor({
       fontWeight: 600
     }
   }, "Discontinued \u2014 hidden from the main list and worklist. Find it in the Discontinued tab.") : /*#__PURE__*/React.createElement("span", null, "No longer sold? Mark it discontinued instead of deleting \u2014 keeps it intact, out of your way, and restorable anytime.")), /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: () => update(b.id, {
       active: b.active === false
     }),
@@ -2535,6 +2592,7 @@ function BundleEditor({
       marginTop: 2
     }
   }, /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: () => onPromote(b),
     style: {
       background: "none",
@@ -2548,6 +2606,7 @@ function BundleEditor({
     },
     title: "This isn't a bundle \u2014 move it into the product list"
   }, "Not a bundle \u2192 move to Products"), /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: () => onDelete(b),
     style: {
       background: "none",
@@ -2566,6 +2625,7 @@ function QuickAdd({
   byId,
   onAdd
 }) {
+  if (IS_TEAM) return null;
   const [q, setQ] = useState("");
   const [qty, setQty] = useState(1);
   const [hi, setHi] = useState(0);
@@ -2865,7 +2925,7 @@ function Products({
     style: barSearch
   })), /*#__PURE__*/React.createElement(InBar, {
     slot: "actions"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, !IS_TEAM && /*#__PURE__*/React.createElement("button", {
     onClick: add,
     style: btnPri
   }, "+ New product")), /*#__PURE__*/React.createElement("div", {
@@ -2990,7 +3050,7 @@ function Products({
       }
     }, /*#__PURE__*/React.createElement("input", {
       value: p.name,
-      disabled: !p.active,
+      disabled: !p.active || IS_TEAM,
       onChange: e => update(p.id, {
         name: e.target.value
       }),
@@ -3003,7 +3063,7 @@ function Products({
       }
     }), /*#__PURE__*/React.createElement("input", {
       value: p.sku,
-      disabled: !p.active,
+      disabled: !p.active || IS_TEAM,
       onChange: e => update(p.id, {
         sku: e.target.value
       }),
@@ -3099,6 +3159,7 @@ function Products({
         color: "var(--muted)"
       }
     }, "\u2014"), /*#__PURE__*/React.createElement("button", {
+      disabled: IS_TEAM,
       onClick: () => update(p.id, {
         active: !p.active
       }),
@@ -3113,6 +3174,7 @@ function Products({
         cursor: "pointer"
       }
     }, p.active ? "Active" : "Inactive"), /*#__PURE__*/React.createElement("button", {
+      disabled: IS_TEAM,
       onClick: () => onDelete(p),
       style: xBtn
     }, "\u2715")), isOpen && used.length > 0 && /*#__PURE__*/React.createElement("div", {
@@ -3769,9 +3831,11 @@ function Discontinued({
       gap: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: onRestore,
     style: btnSec
   }, "Restore"), /*#__PURE__*/React.createElement("button", {
+    disabled: IS_TEAM,
     onClick: onDelete,
     style: {
       ...btnSec,
@@ -3848,22 +3912,17 @@ function splitWarehouseTables(ws, products) {
   return t;
 }
 
-// table / setTable: given when the sidebar picks the table (main app);
-// without them (the /inventory page) it keeps its own and shows buttons
+// table: which Zoho table is open, picked in the sidebar
 function Reorder({
   doc,
   setDoc,
   stickyTop,
   flash,
   products,
-  table: tableProp,
-  setTable: setTableProp
+  table
 }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [ownTable, setOwnTable] = useState("items"); // items | composites | marble | reorder | ceramitec
-  const table = tableProp || ownTable;
-  const setTable = setTableProp || setOwnTable;
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
@@ -4067,21 +4126,7 @@ function Reorder({
       paddingTop: filters ? 2 : 0,
       paddingBottom: filters ? 10 : 0
     }
-  }, !tableProp && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      marginBottom: 10,
-      flexWrap: "wrap"
-    }
-  }, ZOHO_TABLES.map(([k, label]) => {
-    const n = zohoTableCounts(whTables, ws, counts.below)[k];
-    return /*#__PURE__*/React.createElement("button", {
-      key: k,
-      onClick: () => setTable(k),
-      style: tableTab(table === k)
-    }, label, n != null && ` (${n})`);
-  })), /*#__PURE__*/React.createElement(InBar, {
+  }, /*#__PURE__*/React.createElement(InBar, {
     slot: "search"
   }, /*#__PURE__*/React.createElement("input", {
     value: q,
@@ -4108,7 +4153,7 @@ function Reorder({
   }, /*#__PURE__*/React.createElement("button", {
     onClick: refresh,
     disabled: refreshing || coolingDown,
-    title: coolingDown ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 8h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.` : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept.",
+    title: coolingDown ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 2h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.` : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept.",
     style: {
       ...btnSec,
       opacity: refreshing || coolingDown ? 0.55 : 1,
@@ -4118,7 +4163,6 @@ function Reorder({
     style: {
       display: "flex",
       gap: 6,
-      marginTop: tableProp ? 0 : 10,
       flexWrap: "wrap"
     }
   }, filters));
@@ -4130,6 +4174,9 @@ function Reorder({
       textTransform: "none"
     }
   }, label)));
+  if (table === "sales") return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement(SalesTable, {
+    q: q
+  }));
   if (table === "ceramitec") return /*#__PURE__*/React.createElement("div", null, headerWith(null), /*#__PURE__*/React.createElement(CeramitecBundles, {
     rows: ceramitec,
     manual: doc.manual,
@@ -4319,6 +4366,159 @@ function ExpectedDateCell({
       fontSize: 12.5
     }
   }, "+ Add date"));
+}
+
+// Pieces sold and their value per item, counted back from today. Filled by
+// scripts/zoho-sales.js; see lib/zohoSales.js for what counts as a sale.
+const salesGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(240px, 1fr) 130px 130px 130px",
+  gap: 10
+};
+const SALES_SPANS = [["month", "Last month"], ["six", "Last 6 months"], ["year", "Last year"]];
+const rupees = n => "₹" + Math.round(n || 0).toLocaleString("en-IN");
+// packaging: given away at ₹0 all year and named like packaging, so a real
+// product that only went out free still counts as a product
+const PACKAGING_WORDS = /(box|cutout|bag|envelope|carton)/i;
+const isPackaging = r => r.year.value === 0 && PACKAGING_WORDS.test(r.name);
+function SalesTable({
+  q
+}) {
+  const [doc, setDoc] = useState(null);
+  const [sortBy, setSortBy] = useState("year");
+  const [ascending, setAscending] = useState(false);
+  const [packaging, setPackaging] = useState(false);
+  useEffect(() => {
+    fetch("/api/sales").then(r => r.ok ? r.json() : Promise.reject(r.status)).then(setDoc).catch(status => setDoc({
+      rows: [],
+      failed: status === 401 ? "signin" : "error"
+    }));
+  }, []);
+  const shown = useMemo(() => {
+    const rows = (doc && doc.rows || []).filter(r => isPackaging(r) === packaging && matchText(q, `${r.name} ${r.sku}`));
+    const dir = ascending ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    return rows.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (a[sortBy].pieces - b[sortBy].pieces) || byName(a, b));
+  }, [doc, q, sortBy, ascending, packaging]);
+  const packagingCount = useMemo(() => (doc && doc.rows || []).filter(isPackaging).length, [doc]);
+  if (!doc) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: 40,
+      textAlign: "center",
+      color: "var(--muted)"
+    }
+  }, "Loading\u2026");
+  if (doc.failed) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: 40,
+      textAlign: "center",
+      color: "var(--clay)"
+    }
+  }, doc.failed === "signin" ? "You've been signed out. Sign in again to see sales." : "Couldn't load sales. Try again in a minute.");
+  const head = (label, key, align) => /*#__PURE__*/React.createElement("div", {
+    onClick: () => {
+      setAscending(sortBy === key ? !ascending : key === "name");
+      setSortBy(key);
+    },
+    style: {
+      textAlign: align,
+      cursor: "pointer",
+      userSelect: "none"
+    }
+  }, label, sortBy === key && (ascending ? " ▲" : " ▼"));
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 10px",
+      fontSize: 12.5,
+      color: "var(--muted)"
+    }
+  }, doc.lastSyncAt ? `From ${(doc.orders || 0).toLocaleString("en-IN")} Zoho sales orders, updated ${timeAgo(doc.lastSyncAt)}. Values exclude tax and shipping.` : "Not pulled from Zoho yet.", doc.pending > 0 && ` Still loading ${doc.pending} older orders, so these numbers are low for now.`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      marginBottom: 10
+    }
+  }, [[false, `Products (${((doc.rows || []).length - packagingCount).toLocaleString("en-IN")})`], [true, `Packaging (${packagingCount.toLocaleString("en-IN")})`]].map(([on, label]) => /*#__PURE__*/React.createElement("button", {
+    key: label,
+    onClick: () => setPackaging(on),
+    style: {
+      padding: "6px 12px",
+      borderRadius: 4,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      border: `1px solid ${packaging === on ? "var(--ink)" : "var(--line)"}`,
+      background: packaging === on ? "var(--ink)" : "#fff",
+      color: packaging === on ? "var(--paper)" : "var(--muted)"
+    }
+  }, label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 6,
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 680
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...salesGrid,
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--line)",
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+      color: "var(--muted)"
+    }
+  }, head("Name", "name", "left"), SALES_SPANS.map(([key, label]) => /*#__PURE__*/React.createElement(React.Fragment, {
+    key: key
+  }, head(label, key, "right")))), !shown.length && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "30px 16px",
+      textAlign: "center",
+      color: "var(--muted)",
+      fontSize: 14
+    }
+  }, "No items match."), shown.map(r => /*#__PURE__*/React.createElement("div", {
+    key: r.id,
+    style: {
+      ...salesGrid,
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--line)",
+      alignItems: "center",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600
+    }
+  }, r.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, r.sku)), SALES_SPANS.map(([key]) => /*#__PURE__*/React.createElement("div", {
+    key: key,
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600
+    }
+  }, r[key].pieces.toLocaleString("en-IN"), " pcs"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, rupees(r[key].value)))))))));
 }
 
 // Ceramitec's pre-packed sets — single Shopify products, not Zoho items.
@@ -5372,18 +5572,6 @@ const btnPri = {
   cursor: "pointer",
   whiteSpace: "nowrap"
 };
-// Zoho Inventory's table switcher (Reorder list / Ceramitec / …) — bolder
-// than catPill so it doesn't read as one more filter
-const tableTab = on => ({
-  padding: "7px 14px",
-  borderRadius: 4,
-  fontSize: 13.5,
-  fontWeight: 600,
-  cursor: "pointer",
-  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
-  background: on ? "var(--ink)" : "#fff",
-  color: on ? "#fff" : "var(--ink)"
-});
 const catPill = on => ({
   padding: "4px 11px",
   borderRadius: 999,
@@ -5478,7 +5666,7 @@ const numCell = {
   fontSize: 14
 };
 // matches REFRESH_COOLDOWN_MS in lib/zohoReorder.js (the server enforces it)
-const REORDER_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+const REORDER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 // "45m" / "3h" / "3h 20m" for the cooldown countdown
 const fmtLeft = ms => {
   const mins = Math.ceil(ms / 60000);
@@ -5534,67 +5722,4 @@ const prodGrid = {
   gridTemplateColumns: "1fr 120px 166px 66px 80px 84px 30px",
   gap: 8
 };
-
-// The team's page (/inventory): just the Zoho table, none of the other tabs.
-// Same site login as the main app — it hides the rest, it doesn't lock it.
-function InventoryApp() {
-  const [doc, setDoc] = useState(null);
-  const [toast, setToast] = useState(null);
-  const flash = m => {
-    setToast(m);
-    setTimeout(() => setToast(null), 2600);
-  };
-  const [headerH, setHeaderH] = useState(0);
-  const [barSlots, setBarSlots] = useState(null);
-  // catalog products — only for the Ceramitec bundles' Shopify stock
-  const [products, setProducts] = useState([]);
-  useEffect(() => {
-    fetch("/api/reorder").then(r => r.json()).then(d => setDoc(d && d.items ? d : {
-      items: {},
-      lastSyncAt: null
-    })).catch(() => setDoc({
-      items: {},
-      lastSyncAt: null
-    }));
-    fetch("/api/data").then(r => r.json()).then(d => setProducts(d && d.products || [])).catch(() => {});
-  }, []);
-  return /*#__PURE__*/React.createElement(BarSlots.Provider, {
-    value: barSlots
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "mainPad"
-  }, /*#__PURE__*/React.createElement(TopBar, {
-    crumb: "Ware Innovations",
-    title: "Zoho Inventory",
-    onHeight: setHeaderH,
-    onSlots: setBarSlots
-  }), !doc ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: 40,
-      textAlign: "center",
-      color: "var(--muted)"
-    }
-  }, "Loading\u2026") : /*#__PURE__*/React.createElement(Reorder, {
-    doc: doc,
-    setDoc: setDoc,
-    stickyTop: headerH,
-    flash: flash,
-    products: products
-  }), toast && /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "fixed",
-      bottom: 18,
-      left: "50%",
-      transform: "translateX(-50%)",
-      zIndex: 30,
-      background: "var(--ink)",
-      color: "var(--paper)",
-      padding: "10px 16px",
-      borderRadius: 4,
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, toast)));
-}
-
-// inventory.html sets window.APP_VIEW = "inventory" before loading this file
-ReactDOM.createRoot(document.getElementById("root")).render(window.APP_VIEW === "inventory" ? /*#__PURE__*/React.createElement(InventoryApp, null) : /*#__PURE__*/React.createElement(App, null));
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));

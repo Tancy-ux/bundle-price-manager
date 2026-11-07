@@ -1,5 +1,10 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
+// the no-password view (/inventory): no Trash or Shopify pushes, and only prices
+// can be edited in the catalog. This only tidies the screen; middleware.js and
+// lib/teamRules.js enforce the limits.
+const IS_TEAM = window.APP_VIEW === "team";
+
 const money = (n) =>
   isNaN(n) || n == null
     ? "—"
@@ -100,7 +105,10 @@ function diffSet(baseline, current) {
 async function apiPutDiff(diff) {
   const r = await fetch("/api/data", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(IS_TEAM ? {} : { "X-App-View": "admin" }),
+    },
     body: JSON.stringify(diff),
   });
   return r.json();
@@ -242,6 +250,10 @@ function App() {
           setExcludedSkus(merged.excludedSkus);
           setExcludedBundleNames(merged.excludedBundleNames);
           if (d.lastSyncAt !== undefined) setLastSyncAt(d.lastSyncAt || null);
+        } else if (res && res.signin) {
+          location.assign("/login");
+        } else if (res && res.error) {
+          flash(res.error);
         }
       })
       .catch(() => {
@@ -295,7 +307,7 @@ function App() {
 
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
-  // Throttled server-side to once/4h; syncEligible below mirrors that for the UI.
+  // Throttled server-side to once/2h; syncEligible below mirrors that for the UI.
   async function syncNow() {
     setSyncing(true);
     try {
@@ -333,13 +345,13 @@ function App() {
       setSyncing(false);
     }
   }
-  const SYNC_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+  const SYNC_COOLDOWN_MS = 2 * 60 * 60 * 1000;
   const syncEligible =
     !lastSyncAt ||
     Date.now() - new Date(lastSyncAt).getTime() >= SYNC_COOLDOWN_MS;
 
   // out-of-stock .docx: pull the freshest stock first — a full Shopify sync
-  // when the 4h cooldown allows, otherwise whatever the server has now
+  // when the 2h cooldown allows, otherwise whatever the server has now
   // (the scheduled stock check keeps that current)
   async function exportOOS(atelier) {
     let d = syncEligible ? await syncNow() : null;
@@ -655,7 +667,7 @@ function App() {
               ["worklist", staleList.length, true],
               ["stock", oosList.length, true],
               ["discontinued", discontinuedCount],
-              ["trash", trash.length],
+              ...(IS_TEAM ? [] : [["trash", trash.length]]),
             ],
           ],
         ]}
@@ -686,7 +698,7 @@ function App() {
           disabled={syncing || !syncEligible}
           title={
             !syncEligible
-              ? `Last synced ${timeAgo(lastSyncAt)} — available once every 4h`
+              ? `Last synced ${timeAgo(lastSyncAt)} — available once every 2h`
               : "Pull new products, new bundle shells, and refresh stock from Shopify"
           }
         >
@@ -702,6 +714,33 @@ function App() {
                 : "Sync with Shopify"}
           </span>
         </button>
+        {IS_TEAM && (
+          <button
+            className="sbSync"
+            title="Admin sign in"
+            onClick={() => location.assign("/login")}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 4h5v16h-5M4 12h11M11 8l4 4-4 4" />
+            </svg>
+            <span>Admin sign in</span>
+          </button>
+        )}
+        {!IS_TEAM && location.protocol === "https:" && (
+          <button
+            className="sbSync"
+            title="Sign out"
+            onClick={async () => {
+              await fetch("/api/logout", { method: "POST" }).catch(() => {});
+              location.replace("/login");
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 4H5v16h5M9 12h11M16 8l4 4-4 4" />
+            </svg>
+            <span>Sign out</span>
+          </button>
+        )}
       </Sidebar>
 
       {/* the open tab scrolls here, under the top bar; the sidebar stays put */}
@@ -812,7 +851,7 @@ function App() {
             onDelete={deleteBundle}
             onPromote={promoteToProduct}
             onSkip={skipBundle}
-            pushPrice={pushPriceToShopify}
+            pushPrice={IS_TEAM ? null : pushPriceToShopify}
             onJumpToProduct={jumpToProduct}
             initialOpenBundle={bundleJumpTarget}
           />
@@ -828,7 +867,7 @@ function App() {
             onPromote={promoteToProduct}
             onSkip={skipBundle}
             stickyTop={headerH}
-            pushPrice={pushPriceToShopify}
+            pushPrice={IS_TEAM ? null : pushPriceToShopify}
             onJumpToProduct={jumpToProduct}
             initialOpenBundle={bundleJumpTarget}
           />
@@ -841,7 +880,7 @@ function App() {
             onDelete={deleteProduct}
             flash={flash}
             stickyTop={headerH}
-            pushPrice={pushPriceToShopify}
+            pushPrice={IS_TEAM ? null : pushPriceToShopify}
             initialQuery={productJumpQuery}
             onJumpToBundle={jumpToBundle}
           />
@@ -860,7 +899,7 @@ function App() {
             onDelete={deleteBundle}
             onPromote={promoteToProduct}
             onSkip={skipBundle}
-            pushPrice={pushPriceToShopify}
+            pushPrice={IS_TEAM ? null : pushPriceToShopify}
             onJumpToProduct={jumpToProduct}
             onExport={exportOOS}
           />
@@ -880,13 +919,12 @@ function App() {
             doc={reorder}
             setDoc={setReorder}
             table={zohoTable}
-            setTable={setZohoTable}
             stickyTop={headerH}
             flash={flash}
             products={products}
           />
         )}
-        {tab === "trash" && (
+        {tab === "trash" && !IS_TEAM && (
           <Trash
             trash={trash}
             onRestore={restoreFromTrash}
@@ -910,6 +948,7 @@ const ZOHO_TABLES = [
   ["marble", "Marble Atelier"],
   ["reorder", "Reorder list"],
   ["ceramitec", "Ceramitec bundles"],
+  ...(IS_TEAM ? [] : [["sales", "Sales"]]),
 ];
 
 // each tab's name: in the sidebar and as the page title
@@ -1580,6 +1619,25 @@ function Worklist({
                   >
                     {h.kind || "bundle"}
                   </span>
+                  {h.by === "team" && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        verticalAlign: "middle",
+                        whiteSpace: "nowrap",
+                        color: "var(--clay)",
+                        border: "1px solid var(--clay)",
+                      }}
+                    >
+                      Team edited
+                    </span>
+                  )}
                 </span>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>
                   {new Date(h.at).toLocaleDateString()}{" "}
@@ -2087,9 +2145,11 @@ function Bundles({
           />
         </InBar>
         <InBar slot="actions">
-          <button onClick={add} style={btnPri}>
-            + New bundle
-          </button>
+          {!IS_TEAM && (
+            <button onClick={add} style={btnPri}>
+              + New bundle
+            </button>
+          )}
         </InBar>
         <div
           style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}
@@ -2412,6 +2472,7 @@ function Bundles({
                   </span>
                 </button>
                 <button
+                  disabled={IS_TEAM}
                   onClick={() => onDelete(b)}
                   title="Delete bundle"
                   style={{ ...xBtn, marginRight: 10, flexShrink: 0 }}
@@ -2481,6 +2542,7 @@ function BundleEditor({
           Name
           <input
             value={b.name}
+            disabled={IS_TEAM}
             onChange={(e) => update(b.id, { name: e.target.value })}
             style={inp}
           />
@@ -2489,6 +2551,7 @@ function BundleEditor({
           Bundle SKU
           <input
             value={b.sku}
+            disabled={IS_TEAM}
             onChange={(e) => update(b.id, { sku: e.target.value })}
             style={inp}
           />
@@ -2538,6 +2601,7 @@ function BundleEditor({
                 type="number"
                 min="1"
                 value={it.qty}
+                disabled={IS_TEAM}
                 onChange={(e) => {
                   const items = [...b.items];
                   items[idx] = {
@@ -2624,6 +2688,7 @@ function BundleEditor({
                 {p && p.active ? money(p.price * it.qty) : "—"}
               </span>
               <button
+                disabled={IS_TEAM}
                 onClick={() =>
                   update(b.id, { items: b.items.filter((_, i) => i !== idx) })
                 }
@@ -2725,6 +2790,7 @@ function BundleEditor({
             <input
               type="checkbox"
               checked={!!b.giftIncluded}
+              disabled={IS_TEAM}
               onChange={(e) => update(b.id, { giftIncluded: e.target.checked })}
               style={{ marginTop: 2, cursor: "pointer" }}
             />
@@ -2763,6 +2829,7 @@ function BundleEditor({
         Note (optional)
         <textarea
           value={b.note || ""}
+          disabled={IS_TEAM}
           onChange={(e) => update(b.id, { note: e.target.value })}
           placeholder="e.g. includes gift box (+₹150) · seasonal pricing · anything worth remembering"
           rows={2}
@@ -2799,6 +2866,7 @@ function BundleEditor({
           )}
         </div>
         <button
+          disabled={IS_TEAM}
           onClick={() => onSkip(b, !b.skipped)}
           style={{
             ...btnSec,
@@ -2836,6 +2904,7 @@ function BundleEditor({
           )}
         </div>
         <button
+          disabled={IS_TEAM}
           onClick={() => update(b.id, { active: b.active === false })}
           style={{
             ...btnSec,
@@ -2859,6 +2928,7 @@ function BundleEditor({
         }}
       >
         <button
+          disabled={IS_TEAM}
           onClick={() => onPromote(b)}
           style={{
             background: "none",
@@ -2875,6 +2945,7 @@ function BundleEditor({
           Not a bundle → move to Products
         </button>
         <button
+          disabled={IS_TEAM}
           onClick={() => onDelete(b)}
           style={{
             background: "none",
@@ -2895,6 +2966,7 @@ function BundleEditor({
 }
 
 function QuickAdd({ products, byId, onAdd }) {
+  if (IS_TEAM) return null;
   const [q, setQ] = useState("");
   const [qty, setQty] = useState(1);
   const [hi, setHi] = useState(0);
@@ -3234,9 +3306,11 @@ function Products({
           />
         </InBar>
         <InBar slot="actions">
-          <button onClick={add} style={btnPri}>
-            + New product
-          </button>
+          {!IS_TEAM && (
+            <button onClick={add} style={btnPri}>
+              + New product
+            </button>
+          )}
         </InBar>
         <div
           style={{
@@ -3404,7 +3478,7 @@ function Products({
               >
                 <input
                   value={p.name}
-                  disabled={!p.active}
+                  disabled={!p.active || IS_TEAM}
                   onChange={(e) => update(p.id, { name: e.target.value })}
                   style={{
                     border: "none",
@@ -3416,7 +3490,7 @@ function Products({
                 />
                 <input
                   value={p.sku}
-                  disabled={!p.active}
+                  disabled={!p.active || IS_TEAM}
                   onChange={(e) => update(p.id, { sku: e.target.value })}
                   style={{
                     border: "1px solid var(--line)",
@@ -3534,6 +3608,7 @@ function Products({
                   </span>
                 )}
                 <button
+                  disabled={IS_TEAM}
                   onClick={() => update(p.id, { active: !p.active })}
                   style={{
                     border: `1px solid ${p.active ? "var(--sage)" : "var(--line)"}`,
@@ -3548,7 +3623,7 @@ function Products({
                 >
                   {p.active ? "Active" : "Inactive"}
                 </button>
-                <button onClick={() => onDelete(p)} style={xBtn}>
+                <button disabled={IS_TEAM} onClick={() => onDelete(p)} style={xBtn}>
                   ✕
                 </button>
               </div>
@@ -4335,10 +4410,11 @@ function Discontinued({
         <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{sub}</div>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={onRestore} style={btnSec}>
+        <button disabled={IS_TEAM} onClick={onRestore} style={btnSec}>
           Restore
         </button>
         <button
+          disabled={IS_TEAM}
           onClick={onDelete}
           style={{
             ...btnSec,
@@ -4446,14 +4522,10 @@ function splitWarehouseTables(ws, products) {
   return t;
 }
 
-// table / setTable: given when the sidebar picks the table (main app);
-// without them (the /inventory page) it keeps its own and shows buttons
-function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, setTable: setTableProp }) {
+// table: which Zoho table is open, picked in the sidebar
+function Reorder({ doc, setDoc, stickyTop, flash, products, table }) {
   const [q, setQ] = useState("");
   const [vendor, setVendor] = useState("Hollyhock");
-  const [ownTable, setOwnTable] = useState("items"); // items | composites | marble | reorder | ceramitec
-  const table = tableProp || ownTable;
-  const setTable = setTableProp || setOwnTable;
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
   const [sortDir, setSortDir] = useState("asc");
@@ -4666,19 +4738,6 @@ function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, se
         paddingBottom: filters ? 10 : 0,
       }}
     >
-      {!tableProp && (
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {ZOHO_TABLES.map(([k, label]) => {
-          const n = zohoTableCounts(whTables, ws, counts.below)[k];
-          return (
-            <button key={k} onClick={() => setTable(k)} style={tableTab(table === k)}>
-              {label}
-              {n != null && ` (${n})`}
-            </button>
-          );
-        })}
-      </div>
-      )}
       <InBar slot="search">
         <input
           value={q}
@@ -4708,7 +4767,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, se
           disabled={refreshing || coolingDown}
           title={
             coolingDown
-              ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 8h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.`
+              ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 2h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.`
               : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept."
           }
           style={{
@@ -4727,7 +4786,7 @@ function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, se
         </button>
       </InBar>
       {filters && (
-        <div style={{ display: "flex", gap: 6, marginTop: tableProp ? 0 : 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {filters}
         </div>
       )}
@@ -4749,6 +4808,14 @@ function Reorder({ doc, setDoc, stickyTop, flash, products, table: tableProp, se
       </button>
     )),
   );
+
+  if (table === "sales")
+    return (
+      <div>
+        {headerWith(null)}
+        <SalesTable q={q} />
+      </div>
+    );
 
   if (table === "ceramitec")
     return (
@@ -5005,6 +5072,166 @@ function ExpectedDateCell({ value, onChange }) {
           + Add date
         </button>
       )}
+    </div>
+  );
+}
+
+// Pieces sold and their value per item, counted back from today. Filled by
+// scripts/zoho-sales.js; see lib/zohoSales.js for what counts as a sale.
+const salesGrid = {
+  display: "grid",
+  gridTemplateColumns: "minmax(240px, 1fr) 130px 130px 130px",
+  gap: 10,
+};
+const SALES_SPANS = [
+  ["month", "Last month"],
+  ["six", "Last 6 months"],
+  ["year", "Last year"],
+];
+const rupees = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
+// packaging: given away at ₹0 all year and named like packaging, so a real
+// product that only went out free still counts as a product
+const PACKAGING_WORDS = /(box|cutout|bag|envelope|carton)/i;
+const isPackaging = (r) => r.year.value === 0 && PACKAGING_WORDS.test(r.name);
+
+function SalesTable({ q }) {
+  const [doc, setDoc] = useState(null);
+  const [sortBy, setSortBy] = useState("year");
+  const [ascending, setAscending] = useState(false);
+  const [packaging, setPackaging] = useState(false);
+  useEffect(() => {
+    fetch("/api/sales")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then(setDoc)
+      .catch((status) => setDoc({ rows: [], failed: status === 401 ? "signin" : "error" }));
+  }, []);
+  const shown = useMemo(() => {
+    const rows = ((doc && doc.rows) || []).filter(
+      (r) => isPackaging(r) === packaging && matchText(q, `${r.name} ${r.sku}`),
+    );
+    const dir = ascending ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    return rows.sort((a, b) =>
+      sortBy === "name"
+        ? dir * byName(a, b)
+        : dir * (a[sortBy].pieces - b[sortBy].pieces) || byName(a, b),
+    );
+  }, [doc, q, sortBy, ascending, packaging]);
+  const packagingCount = useMemo(
+    () => ((doc && doc.rows) || []).filter(isPackaging).length,
+    [doc],
+  );
+
+  if (!doc)
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Loading…</div>;
+  if (doc.failed)
+    return (
+      <div style={{ padding: 40, textAlign: "center", color: "var(--clay)" }}>
+        {doc.failed === "signin"
+          ? "You've been signed out. Sign in again to see sales."
+          : "Couldn't load sales. Try again in a minute."}
+      </div>
+    );
+
+  const head = (label, key, align) => (
+    <div
+      onClick={() => {
+        setAscending(sortBy === key ? !ascending : key === "name");
+        setSortBy(key);
+      }}
+      style={{ textAlign: align, cursor: "pointer", userSelect: "none" }}
+    >
+      {label}
+      {sortBy === key && (ascending ? " ▲" : " ▼")}
+    </div>
+  );
+  return (
+    <div>
+      <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "var(--muted)" }}>
+        {doc.lastSyncAt
+          ? `From ${(doc.orders || 0).toLocaleString("en-IN")} Zoho sales orders, updated ${timeAgo(doc.lastSyncAt)}. Values exclude tax and shipping.`
+          : "Not pulled from Zoho yet."}
+        {doc.pending > 0 && ` Still loading ${doc.pending} older orders, so these numbers are low for now.`}
+      </p>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[
+          [false, `Products (${((doc.rows || []).length - packagingCount).toLocaleString("en-IN")})`],
+          [true, `Packaging (${packagingCount.toLocaleString("en-IN")})`],
+        ].map(([on, label]) => (
+          <button
+            key={label}
+            onClick={() => setPackaging(on)}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 4,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              border: `1px solid ${packaging === on ? "var(--ink)" : "var(--line)"}`,
+              background: packaging === on ? "var(--ink)" : "#fff",
+              color: packaging === on ? "var(--paper)" : "var(--muted)",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        style={{
+          background: "var(--card)",
+          border: "1px solid var(--line)",
+          borderRadius: 6,
+          overflowX: "auto",
+        }}
+      >
+        <div style={{ minWidth: 680 }}>
+          <div
+            style={{
+              ...salesGrid,
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--line)",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              color: "var(--muted)",
+            }}
+          >
+            {head("Name", "name", "left")}
+            {SALES_SPANS.map(([key, label]) => (
+              <React.Fragment key={key}>{head(label, key, "right")}</React.Fragment>
+            ))}
+          </div>
+          {!shown.length && (
+            <div style={{ padding: "30px 16px", textAlign: "center", color: "var(--muted)", fontSize: 14 }}>
+              No items match.
+            </div>
+          )}
+          {shown.map((r) => (
+            <div
+              key={r.id}
+              style={{
+                ...salesGrid,
+                padding: "10px 16px",
+                borderBottom: "1px solid var(--line)",
+                alignItems: "center",
+                fontSize: 14,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>{r.name}</div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.sku}</div>
+              </div>
+              {SALES_SPANS.map(([key]) => (
+                <div key={key} style={{ textAlign: "right" }}>
+                  <div style={{ fontWeight: 600 }}>{r[key].pieces.toLocaleString("en-IN")} pcs</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{rupees(r[key].value)}</div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -6021,18 +6248,6 @@ const btnPri = {
   cursor: "pointer",
   whiteSpace: "nowrap",
 };
-// Zoho Inventory's table switcher (Reorder list / Ceramitec / …) — bolder
-// than catPill so it doesn't read as one more filter
-const tableTab = (on) => ({
-  padding: "7px 14px",
-  borderRadius: 4,
-  fontSize: 13.5,
-  fontWeight: 600,
-  cursor: "pointer",
-  border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`,
-  background: on ? "var(--ink)" : "#fff",
-  color: on ? "#fff" : "var(--ink)",
-});
 const catPill = (on) => ({
   padding: "4px 11px",
   borderRadius: 999,
@@ -6120,7 +6335,7 @@ const wlGrid = {
 };
 const numCell = { textAlign: "right", fontSize: 14 };
 // matches REFRESH_COOLDOWN_MS in lib/zohoReorder.js (the server enforces it)
-const REORDER_COOLDOWN_MS = 8 * 60 * 60 * 1000;
+const REORDER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 // "45m" / "3h" / "3h 20m" for the cooldown countdown
 const fmtLeft = (ms) => {
   const mins = Math.ceil(ms / 60000);
@@ -6168,74 +6383,6 @@ const prodGrid = {
   gap: 8,
 };
 
-// The team's page (/inventory): just the Zoho table, none of the other tabs.
-// Same site login as the main app — it hides the rest, it doesn't lock it.
-function InventoryApp() {
-  const [doc, setDoc] = useState(null);
-  const [toast, setToast] = useState(null);
-  const flash = (m) => {
-    setToast(m);
-    setTimeout(() => setToast(null), 2600);
-  };
-  const [headerH, setHeaderH] = useState(0);
-  const [barSlots, setBarSlots] = useState(null);
-  // catalog products — only for the Ceramitec bundles' Shopify stock
-  const [products, setProducts] = useState([]);
-  useEffect(() => {
-    fetch("/api/reorder")
-      .then((r) => r.json())
-      .then((d) => setDoc(d && d.items ? d : { items: {}, lastSyncAt: null }))
-      .catch(() => setDoc({ items: {}, lastSyncAt: null }));
-    fetch("/api/data")
-      .then((r) => r.json())
-      .then((d) => setProducts((d && d.products) || []))
-      .catch(() => {});
-  }, []);
-  return (
-    <BarSlots.Provider value={barSlots}>
-    <div className="mainPad">
-      <TopBar
-        crumb="Ware Innovations"
-        title="Zoho Inventory"
-        onHeight={setHeaderH}
-        onSlots={setBarSlots}
-      />
-      {!doc ? (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Loading…</div>
-      ) : (
-        <Reorder
-          doc={doc}
-          setDoc={setDoc}
-          stickyTop={headerH}
-          flash={flash}
-          products={products}
-        />
-      )}
-      {toast && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 18,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 30,
-            background: "var(--ink)",
-            color: "var(--paper)",
-            padding: "10px 16px",
-            borderRadius: 4,
-            fontSize: 13,
-            fontWeight: 600,
-          }}
-        >
-          {toast}
-        </div>
-      )}
-    </div>
-    </BarSlots.Provider>
-  );
-}
-
-// inventory.html sets window.APP_VIEW = "inventory" before loading this file
 ReactDOM.createRoot(document.getElementById("root")).render(
-  window.APP_VIEW === "inventory" ? <InventoryApp /> : <App />,
+  <App />,
 );

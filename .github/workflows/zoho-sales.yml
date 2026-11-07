@@ -1,0 +1,36 @@
+# Every day: refresh sales per item from Zoho (the app's Sales table).
+#
+# Safe to run unattended: it only reads from Zoho. The first run fetches every
+# order from the last year and takes about 20 minutes.
+#
+# Uses the same secrets as zoho-reorder.yml, but ZOHO_REFRESH_TOKEN must also
+# have the ZohoInventory.salesorders.READ scope.
+
+name: Refresh Zoho sales
+
+on:
+  schedule:
+    - cron: "30 0 * * *" # 06:00 IST
+  workflow_dispatch: {}
+
+jobs:
+  zoho-sales:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci --omit=dev || npm install --omit=dev
+
+      - name: Refresh sales from Zoho
+        env:
+          KV_REST_API_URL: ${{ secrets.KV_REST_API_URL }}
+          KV_REST_API_TOKEN: ${{ secrets.KV_REST_API_TOKEN }}
+          ZOHO_CLIENT_ID: ${{ secrets.ZOHO_CLIENT_ID }}
+          ZOHO_CLIENT_SECRET: ${{ secrets.ZOHO_CLIENT_SECRET }}
+          ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
+          ZOHO_ORG_ID: ${{ secrets.ZOHO_ORG_ID }}
+        run: node scripts/zoho-sales.js --apply
