@@ -43,3 +43,85 @@ textarea:focus{outline:2px solid var(--brass);outline-offset:1px}
 button{transition:background-color .15s,border-color .15s,color .15s,opacity .15s}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
+
+/* app layout: sidebar, shell (shared by the admin and team pages) */
+  /* app shell: the black marble sidebar, and next to it the open tab, which
+     scrolls on its own */
+  .shell{display:flex;height:var(--vh)}
+  .sidebar{--sbInk:#efe9df;--sbDim:rgba(239,233,223,.68);--sbLine:#3a3633;--sbGold:#d6b46e;
+    --sbEase:cubic-bezier(.45,0,.2,1);
+    position:relative;width:276px;flex:none;height:100%;display:flex;flex-direction:column;gap:1px;
+    padding:18px 10px 14px;color:var(--sbInk);
+    /* black marble: blurred noise as faint white veining. A background image,
+       so it's drawn once and stays put while the sidebar scrolls or narrows */
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='276' height='1000'%3E%3Cfilter id='v' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.012' numOctaves='4' seed='11'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1.6 0 0 0 -0.3'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 0 0.7 0 0 0 0.35 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeGaussianBlur stdDeviation='7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='white' opacity='0.3' filter='url(%23v)'/%3E%3C/svg%3E") 0 0/276px 1000px repeat-y,#141313;
+    overflow-y:auto;overflow-x:hidden;scrollbar-width:none;transition:width .42s var(--sbEase)}
+  .sidebar::-webkit-scrollbar{display:none}
+  .sidebar>*{position:relative;flex-shrink:0} /* scroll when short, never squash */
+  .sbBrand{display:flex;align-items:center;gap:10px;padding:0 6px 8px}
+  .sbMark{width:30px;height:30px;flex:none;border-radius:50%;border:1px solid var(--brass);color:var(--sbGold);
+    display:grid;place-items:center;font-weight:600;font-size:17px}
+  .sbName{font-size:19px;font-weight:600;line-height:1.1;min-width:150px}
+  .sbName small{display:block;margin-top:3px;font-family:'Manrope',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    font-size:9.5px;letter-spacing:2px;text-transform:uppercase;color:var(--sbGold);font-weight:700}
+  .sbGroup{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--sbGold);font-weight:700;
+    padding:14px 12px 5px;white-space:nowrap}
+  .sbItem{position:relative;display:flex;align-items:center;gap:11px;width:100%;border:0;background:none;
+    cursor:pointer;padding:8px 12px;border-radius:6px;font-size:14px;font-weight:500;color:var(--sbDim);
+    text-align:left;white-space:nowrap;overflow:hidden;transition:background-color .15s,color .15s}
+  .sbItem:hover{background:rgba(255,255,255,.06);color:var(--sbInk)}
+  .sbItem.on{background:rgba(255,255,255,.08);color:#fff;box-shadow:inset 2px 0 0 var(--brass)}
+  .sbItem svg,.sbSync svg,.sbCollapse svg{width:17px;height:17px;flex:none;stroke:currentColor;fill:none;
+    stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .sbLabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .sbCount{flex:none;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;padding:1px 7px;border-radius:9px;
+    background:rgba(255,255,255,.08);color:var(--sbDim)}
+  /* needs attention: oxblood, so it doesn't read as decoration */
+  .sbCount.hot{background:#8e2a39;color:#fff}
+  .sbSub{margin:2px 0 4px 20px;padding-left:10px;border-left:1px solid var(--sbLine);display:flex;flex-direction:column;gap:1px;
+    max-height:240px;overflow:hidden;transition:max-height .42s var(--sbEase),margin .42s var(--sbEase),opacity .26s ease .18s}
+  .sbSub .sbItem{font-size:12.5px;padding:5px 8px}
+  .sbSubCount{font-size:11px;font-variant-numeric:tabular-nums;opacity:.7}
+  .sbSub .sbItem.on{background:none;box-shadow:none;color:var(--sbGold);font-weight:700}
+  .sbFoot{margin-top:auto;display:flex;flex-direction:column;gap:8px;padding:12px 0 0;border-top:1px solid var(--sbLine)}
+  .sbStats{padding:0 6px;font-size:11.5px;color:var(--sbDim);line-height:1.6;white-space:nowrap;max-height:80px;overflow:hidden;
+    transition:max-height .42s var(--sbEase),opacity .26s ease .18s}
+  .sbStats b{color:var(--sbInk)}
+  .sbStats .ok{color:#9cc3a6}
+  .sbStats .busy{color:var(--sbGold)}
+  .sbSync{display:flex;align-items:center;gap:8px;border:1px solid rgba(239,233,223,.38);background:transparent;border-radius:4px;
+    padding:8px 11px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--sbInk);white-space:nowrap;overflow:hidden;
+    transition:border-color .15s}
+  .sbSync:hover:not(:disabled){border-color:var(--brass)}
+  .sbSync:disabled{opacity:.55;cursor:default}
+  .sbCollapse{border:0;background:none;color:var(--sbDim);cursor:pointer;font-size:12px;padding:4px 11px;
+    display:flex;gap:8px;align-items:center;white-space:nowrap;overflow:hidden}
+  .sbCollapse svg{transition:transform .42s var(--sbEase)}
+  /* collapsed (always on narrow screens): icons only, names in tooltips, a
+     dot where something needs attention. Nothing jumps: the icons already
+     sit where the narrow rail centres them, the width slides, the words
+     fade (back in just after the width opens) and the table list folds up. */
+  .sbName,.sbGroup,.sbLabel,.sbCount,.sbSubCount,.sbSync span,.sbCollapse span{transition:opacity .26s ease .18s}
+  @media (max-width:1480px){.sidebar{width:232px}}
+  .sidebar.slim{width:60px}
+  .sidebar.slim :is(.sbName,.sbGroup,.sbLabel,.sbCount,.sbSync span,.sbCollapse span){opacity:0;transition:opacity .18s ease}
+  .sidebar.slim .sbSub{max-height:0;margin-top:0;margin-bottom:0;opacity:0;transition:max-height .42s var(--sbEase),margin .42s var(--sbEase),opacity .18s ease}
+  .sidebar.slim .sbStats{max-height:0;opacity:0;transition:max-height .42s var(--sbEase),opacity .18s ease}
+  .sidebar.slim .sbCollapse svg{transform:rotate(180deg)}
+  .sbItem.dot::after{content:"";position:absolute;top:5px;left:29px;width:7px;height:7px;border-radius:50%;background:#d0505f;
+    opacity:0;transition:opacity .18s}
+  .sidebar.slim .sbItem.dot::after{opacity:1}
+  /* collapsed: the Zoho tables pop out beside the rail (fixed, so the
+     sidebar's overflow doesn't clip it) instead of changing the page */
+  .sbFly{position:fixed;left:64px;z-index:50;min-width:220px;padding:8px;display:flex;flex-direction:column;gap:1px;
+    background:#1c1a19;border:1px solid var(--sbLine);border-radius:8px;box-shadow:0 18px 40px -16px rgba(0,0,0,.6);
+    animation:sbFlyIn .16s ease}
+  .sbFlyHead{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--sbGold);font-weight:700;padding:4px 8px 6px}
+  .sbFly .sbItem{font-size:13px;padding:6px 8px}
+  .sbFly .sbItem.on{background:none;box-shadow:none;color:var(--sbGold);font-weight:700}
+  .sidebar.slim .sbFly .sbLabel{opacity:1;transition:none}
+  @keyframes sbFlyIn{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.sidebar,.sidebar *,.sidebar *::after{transition:none!important}}
+
+/* the team view shows controls it can't use as faded */
+button:disabled,input:disabled,textarea:disabled{opacity:.55;cursor:default!important}

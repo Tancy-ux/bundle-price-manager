@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in</title>
+<link rel="stylesheet" href="theme.css" />
+<style>
+  body { min-height: 100vh; display: grid; place-items: center; margin: 0; padding: 16px; box-sizing: border-box; background: var(--paper); color: var(--ink); font-family: Manrope, sans-serif; }
+  form { width: 100%; max-width: 320px; display: grid; gap: 10px; }
+  h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  input, button { font: inherit; padding: 10px 12px; border-radius: 4px; box-sizing: border-box; width: 100%; }
+  input { border: 1px solid var(--line); background: #fff; color: var(--ink); }
+  button { border: 1px solid var(--ink); background: var(--ink); color: var(--paper); font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  p { margin: 0; min-height: 18px; font-size: 13px; color: var(--clay); }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>Bundle Price Manager</h1>
+  <input id="p" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" autofocus required />
+  <button id="b" type="submit">Sign in</button>
+  <p id="e" role="alert"></p>
+</form>
+<script>
+  document.getElementById("f").addEventListener("submit", async function (ev) {
+    ev.preventDefault();
+    var btn = document.getElementById("b"), err = document.getElementById("e");
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      var r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("p").value }),
+      });
+      if (r.ok) return location.replace("/");
+      err.textContent = r.status === 401 ? "Wrong password" : "Couldn't sign in, try again";
+    } catch (e) {
+      err.textContent = "Couldn't reach the server";
+    }
+    btn.disabled = false;
+  });
+</script>
+</body>
+</html>

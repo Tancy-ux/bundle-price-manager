@@ -3,5 +3,8 @@
   "framework": null,
   "buildCommand": null,
   "outputDirectory": "public",
-  "rewrites": [{ "source": "/inventory", "destination": "/inventory.html" }]
+  "rewrites": [
+    { "source": "/inventory", "destination": "/inventory.html" },
+    { "source": "/login", "destination": "/login.html" }
+  ]
 }

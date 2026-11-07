@@ -99,8 +99,9 @@ hosted copy instead uses **`api/data.js`** (a Vercel function) backed by
    `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (or `KV_REST_API_*`;
    the code accepts either). Redeploy.
 4. **Lock it down.** Project → **Settings → Environment Variables** → add
-   `BASIC_AUTH_USER` and `BASIC_AUTH_PASS`. `middleware.js` then makes the whole
-   site prompt for that login. Until both are set the URL is open to anyone.
+   `BASIC_AUTH_PASS`. `middleware.js` then sends everything except the team view
+   to the `/login` page (it stays signed in for 30 days). Until it's set the URL
+   is open to anyone.
    Redeploy.
 5. **Load your catalog once.** Locally, make a `.env` file next to
    `package.json` with the two `UPSTASH_REDIS_REST_*` values (copy from the
@@ -264,7 +265,7 @@ listings) by name.
 The **"Sync with Shopify"** button in the app header runs all three of the
 above in a single pass — new products, new bundle shells, and a stock
 refresh — with one Shopify fetch and one write. Throttled to **once every
-4 hours**, enforced by the server (`/api/sync`), not just the button, so
+2 hours**, enforced by the server (`/api/sync`), not just the button, so
 it's safe even if the endpoint is hit directly.
 
 For the hosted app, it needs `SHOPIFY_STORE` and `SHOPIFY_ADMIN_TOKEN` added
@@ -285,7 +286,7 @@ same list as Zoho's *Vendor → Order Now* screen.
 - **Quantity to be received** is worked out from open purchase orders
   (ordered − cancelled − the larger of received/billed; closed POs ignored),
   the same numbers Zoho's Order Now screen shows.
-- **Refresh from Zoho** button (usable once every 8h, counted from the last press; enforced by the server), plus
+- **Refresh from Zoho** button (usable once every 2h, counted from the last press; enforced by the server), plus
   `.github/workflows/zoho-reorder.yml` every 8 hours. `npm run zoho-reorder`
   does a dry run locally (`-- --apply` to write).
 - Refreshing only updates Zoho's numbers. It **never deletes a row** and never
@@ -302,10 +303,15 @@ inactive warehouses (Studio, Design Office), which are left out. Items is cut
 down to SKUs active in this catalog (i.e. live on Shopify); Composite items is
 every active composite in Zoho. Both are pulled with the same refresh.
 
-**Sharing it with the team:** `/inventory` is a page with only this table —
-no other tabs, same dates/notes/Refresh as the main tab. It's behind
-the same site login as the main app, so it hides the rest of the app but
-doesn't lock anyone out of it.
+**Sharing it with the team:** `/inventory` is the team view and needs no
+password, so anyone with the link can use it. It has every tab except Trash,
+and they can edit prices, notes and dates, and run Sync and Zoho Refresh. The
+server ignores anything else they send (see `lib/teamRules.js`), and Push price
+and Trash are admin-only. Their price changes show as "Team edited" in History.
+
+**Sales table:** pieces and value per item for the last month, 6 months and
+year, from Zoho sales orders. Admin only. `.github/workflows/zoho-sales.yml`
+refreshes it daily, and the token needs `ZohoInventory.salesorders.READ`.
 
 Needs, in `.env`, the Vercel project's Environment Variables, and the GitHub
 repository secrets: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`,

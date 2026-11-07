@@ -3,7 +3,7 @@
 // scripts/import-bundle-shells.js + scripts/fetch-stock.js worth of logic in
 // one pass — see lib/shopifySync.js for the actual diff/merge logic.
 //
-// Throttled to once per 4h (enforced here, not just in the UI) since it's
+// Throttled to once per 2h (enforced here, not just in the UI) since it's
 // reachable by anyone who can load the app.
 //
 // Env vars needed (Vercel project → Settings → Environment Variables):
@@ -30,10 +30,13 @@ function getRedis() {
   return _redis;
 }
 
+import { isAdmin } from "../lib/auth.js";
+import { forTeam } from "./data.js";
+
 const KEY = "bundle-manager:data";
 const BACKUPS = "bundle-manager:backups";
 const MAX_BACKUPS = 20;
-const THROTTLE_MS = 4 * 60 * 60 * 1000;
+const THROTTLE_MS = 2 * 60 * 60 * 1000;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -73,7 +76,8 @@ export default async function handler(req, res) {
     merged.updatedAt = new Date().toISOString();
     await redis.set(KEY, merged);
 
-    return res.status(200).json({ ok: true, summary, data: merged });
+    const admin = await isAdmin(req.headers.cookie);
+    return res.status(200).json({ ok: true, summary, data: admin ? merged : forTeam(merged) });
   } catch (e) {
     console.error("sync error:", e);
     return res.status(500).json({ error: "sync error", detail: String(e?.message || e) });

@@ -12,6 +12,8 @@
 
 import { Redis } from "@upstash/redis";
 import { mergeUpserts, mergeTrash, mergeSet } from "../lib/mergeData.js";
+import { applyTeamSave } from "../lib/teamRules.js";
+import { isAdmin } from "../lib/auth.js";
 
 let _redis;
 function getRedis() {
@@ -30,20 +32,30 @@ function getRedis() {
 
 const KEY = "bundle-manager:data";
 const BACKUPS = "bundle-manager:backups";
+const TEAM_BACKUP_LOCK = "bundle-manager:team-backup-lock";
 const MAX_BACKUPS = 20;
+const TEAM_BACKUP_EVERY_S = 60 * 60;
 
 const EMPTY = { products: [], bundles: [], trash: [], updatedAt: null };
+
+// what the no-password team view gets: everything but Trash
+export const forTeam = (doc) => ({ ...doc, trash: [] });
 
 export default async function handler(req, res) {
   try {
     const redis = getRedis();
+    const admin = await isAdmin(req.headers.cookie);
 
     if (req.method === "GET") {
       const data = (await redis.get(KEY)) || EMPTY;
-      return res.status(200).json(data);
+      return res.status(200).json(admin ? data : forTeam(data));
     }
 
     if (req.method === "PUT") {
+      // the admin page says so, so an expired sign-in can't save as the team
+      if (req.headers["x-app-view"] === "admin" && !admin) {
+        return res.status(401).json({ error: "Signed out, sign in again", signin: true });
+      }
       const { productsDiff, bundlesDiff, trashDiff, excludedSkusDiff, excludedBundleNamesDiff } = req.body || {};
       if (!productsDiff || !bundlesDiff) {
         return res.status(400).json({ error: "productsDiff and bundlesDiff are required" });
@@ -52,6 +64,18 @@ export default async function handler(req, res) {
       // read fresh — not the client's idea of what was there, so a
       // concurrent edit from someone else isn't silently discarded
       const prev = (await redis.get(KEY)) || EMPTY;
+
+      if (!admin) {
+        const { doc, changed } = applyTeamSave(prev, req.body);
+        if (!changed) return res.status(200).json({ ok: true, data: forTeam(prev) });
+        // at most one backup an hour, so team saves can't push out the rest
+        if (await redis.set(TEAM_BACKUP_LOCK, "1", { nx: true, ex: TEAM_BACKUP_EVERY_S })) {
+          await redis.lpush(BACKUPS, JSON.stringify({ at: new Date().toISOString(), data: prev }));
+          await redis.ltrim(BACKUPS, 0, MAX_BACKUPS - 1);
+        }
+        await redis.set(KEY, doc);
+        return res.status(200).json({ ok: true, data: forTeam(doc) });
+      }
 
       // rolling backup of the previous version (last 20 kept)
       await redis.lpush(BACKUPS, JSON.stringify({ at: new Date().toISOString(), data: prev }));

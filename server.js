@@ -95,7 +95,7 @@ app.put("/api/data", (req, res) => {
   res.json({ ok: true, data: saved });
 });
 
-const SYNC_THROTTLE_MS = 4 * 60 * 60 * 1000;
+const SYNC_THROTTLE_MS = 2 * 60 * 60 * 1000;
 
 app.post("/api/sync", async (req, res) => {
   try {
@@ -180,9 +180,23 @@ function writeReorder(doc) {
   return doc;
 }
 
-// the team's Zoho-only page (hosted, the middleware limits the team login to it)
+// the team view (hosted, it's the page that needs no password)
 app.get("/inventory", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "inventory.html"));
+});
+
+// the sign-in page. There's no password locally, so any entry gets in
+app.get("/login", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+app.post("/api/login", (req, res) => {
+  res.json({ ok: true });
+});
+
+// sales per item, written by scripts/zoho-sales.js --local
+app.get("/api/sales", (req, res) => {
+  const file = path.join(DATA_DIR, "sales.json");
+  res.json(fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : { rows: [] });
 });
 
 app.get("/api/reorder", (req, res) => {

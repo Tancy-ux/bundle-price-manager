@@ -5,7 +5,7 @@
 //   POST                        → refresh numbers from Zoho (see lib/zohoReorder.js)
 //   PATCH {id, expectedDate?, notes?} → save one row's hand-entered fields
 //
-// The Refresh button is throttled to once per 8h (Zoho caps API calls per
+// The Refresh button is throttled to once per 2h (Zoho caps API calls per
 // day, and this is reachable by anyone who can load the app, team included).
 // The scheduled 8-hourly refresh doesn't count towards it.
 //
