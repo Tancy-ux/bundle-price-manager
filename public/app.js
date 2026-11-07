@@ -102,6 +102,7 @@ function diffSet(baseline, current) {
     removed: [...baseSet].filter(x => !curSet.has(x))
   };
 }
+const SAVE_DELAY_MS = 600;
 async function apiPutDiff(diff) {
   const r = await fetch("/api/data", {
     method: "PUT",
@@ -123,9 +124,12 @@ function App() {
   // a future Shopify sync won't re-add them. Restoring from Trash clears the entry.
   const [excludedSkus, setExcludedSkus] = useState([]);
   const [excludedBundleNames, setExcludedBundleNames] = useState([]);
-  const [tab, setTab] = useState("reorder");
-  // which Zoho Inventory table is open — picked from under it in the sidebar
+  const [tab, setTab] = useState("zoho");
+  // which Zoho table the Stock page shows
   const [zohoTable, setZohoTable] = useState("items");
+  // the switch at the top of To do and Archive
+  const [todoView, setTodoView] = useState("prices");
+  const [archiveView, setArchiveView] = useState("discontinued");
   // the top bar's search / buttons slots, filled by the open tab (see InBar)
   const [barSlots, setBarSlots] = useState(null);
   // set when jumping from a bundle's component to Products, so it opens
@@ -147,6 +151,9 @@ function App() {
     lastSyncAt: null
   });
   const firstLoad = useRef(true);
+  // an edit waiting to be saved / a save on its way to the server
+  const pendingSaveRef = useRef(false);
+  const saveInFlightRef = useRef(false);
   // last confirmed-saved state, used to compute what actually changed —
   // see diffById/apiPutDiff above and lib/mergeData.js for why
   const baselineRef = useRef({
@@ -162,7 +169,7 @@ function App() {
   // per-table counts for the sidebar's Zoho Inventory list
   const zohoCounts = useMemo(() => {
     const ws = reorder.warehouseStock;
-    return zohoTableCounts(splitWarehouseTables(ws, products), ws, Object.values(reorder.items || {}).filter(r => r.below).length);
+    return zohoTableCounts(splitWarehouseTables(ws, products), ws);
   }, [reorder, products]);
   useEffect(() => {
     (async () => {
@@ -204,49 +211,104 @@ function App() {
     const excludedSkusDiff = diffSet(baseline.excludedSkus, excludedSkus);
     const excludedBundleNamesDiff = diffSet(baseline.excludedBundleNames, excludedBundleNames);
     const nothingChanged = !productsDiff.upserts.length && !productsDiff.deletes.length && !bundlesDiff.upserts.length && !bundlesDiff.deletes.length && !trashDiff.upserts.length && !trashDiff.deletes.length && !excludedSkusDiff.added.length && !excludedSkusDiff.removed.length && !excludedBundleNamesDiff.added.length && !excludedBundleNamesDiff.removed.length;
-    if (nothingChanged) return;
+    if (nothingChanged) {
+      pendingSaveRef.current = false;
+      if (!saveInFlightRef.current) setSaving(false);
+      return;
+    }
+    if (IS_TEAM) {
+      // the price this tab last saw, so the server can refuse a change made on
+      // top of a price someone else has since changed
+      const seen = (list, field) => new Map(list.map(x => [x.id, x[field] || 0]));
+      const productWas = seen(baseline.products, "price");
+      const bundleWas = seen(baseline.bundles, "storedPrice");
+      productsDiff.upserts = productsDiff.upserts.map(u => ({
+        ...u,
+        _was: productWas.get(u.id)
+      }));
+      bundlesDiff.upserts = bundlesDiff.upserts.map(u => ({
+        ...u,
+        _was: bundleWas.get(u.id)
+      }));
+    }
     let cancel = false;
+    // wait for a pause in typing, so one edit is one save (and one history
+    // entry), and never send a save while the last is still on its way, so
+    // they can't arrive out of order
+    pendingSaveRef.current = true;
     setSaving(true);
-    apiPutDiff({
-      productsDiff,
-      bundlesDiff,
-      trashDiff,
-      excludedSkusDiff,
-      excludedBundleNamesDiff
-    }).then(res => {
-      if (cancel) return;
-      setSaving(false);
-      if (res && res.ok && res.data) {
-        const d = res.data;
-        const merged = {
-          products: d.products || [],
-          bundles: d.bundles || [],
-          trash: d.trash || [],
-          excludedSkus: d.excludedSkus || [],
-          excludedBundleNames: d.excludedBundleNames || []
-        };
-        baselineRef.current = merged;
-        setProducts(merged.products);
-        setBundles(merged.bundles);
-        setTrash(merged.trash);
-        setExcludedSkus(merged.excludedSkus);
-        setExcludedBundleNames(merged.excludedBundleNames);
-        if (d.lastSyncAt !== undefined) setLastSyncAt(d.lastSyncAt || null);
-      } else if (res && res.signin) {
-        location.assign("/login");
-      } else if (res && res.error) {
-        flash(res.error);
+    let timer;
+    const send = () => {
+      if (saveInFlightRef.current) {
+        timer = setTimeout(send, 250);
+        return;
       }
-    }).catch(() => {
-      if (!cancel) {
+      saveInFlightRef.current = true;
+      apiPutDiff({
+        productsDiff,
+        bundlesDiff,
+        trashDiff,
+        excludedSkusDiff,
+        excludedBundleNamesDiff
+      }).then(res => {
+        saveInFlightRef.current = false;
+        if (cancel) {
+          if (!pendingSaveRef.current) setSaving(false);
+          return;
+        }
+        pendingSaveRef.current = false;
         setSaving(false);
-        flash("Could not save to disk — is the server running?");
-      }
-    });
+        if (res && res.ok && res.data) {
+          const d = res.data;
+          const merged = {
+            products: d.products || [],
+            bundles: d.bundles || [],
+            trash: d.trash || [],
+            excludedSkus: d.excludedSkus || [],
+            excludedBundleNames: d.excludedBundleNames || []
+          };
+          baselineRef.current = merged;
+          setProducts(merged.products);
+          setBundles(merged.bundles);
+          setTrash(merged.trash);
+          setExcludedSkus(merged.excludedSkus);
+          setExcludedBundleNames(merged.excludedBundleNames);
+          if (d.lastSyncAt !== undefined) setLastSyncAt(d.lastSyncAt || null);
+          if (res.stale) flash("Someone changed that price just before you. The latest is shown, so change it again if needed.");
+        } else if (res && res.signin) {
+          // say the change wasn't kept before leaving for the sign-in page
+          pendingSaveRef.current = false;
+          flash("You've been signed out, so your last change wasn't saved. Taking you to sign in…");
+          setTimeout(() => location.assign("/login"), 2500);
+        } else if (res && res.error) {
+          flash(res.error);
+        }
+      }).catch(() => {
+        saveInFlightRef.current = false;
+        if (!cancel) {
+          pendingSaveRef.current = false;
+          setSaving(false);
+          flash("Could not save to disk — is the server running?");
+        }
+      });
+    };
+    timer = setTimeout(send, SAVE_DELAY_MS);
     return () => {
       cancel = true;
+      clearTimeout(timer);
     };
   }, [products, bundles, trash, excludedSkus, excludedBundleNames, ready]);
+
+  // closing the tab with an edit not saved yet asks first
+  useEffect(() => {
+    const warn = e => {
+      if (!pendingSaveRef.current && !saveInFlightRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
   const flash = m => {
     setToast(m);
     setTimeout(() => setToast(null), 2600);
@@ -294,7 +356,13 @@ function App() {
   // "Sync with Shopify" — adds new products (active + SKU), new empty bundle
   // shells (active + no SKU), and refreshes stock on everything, in one call.
   // Throttled server-side to once/2h; syncEligible below mirrors that for the UI.
+  // an edit typed just before Sync or an export is saved first, so taking the
+  // server's copy afterwards can't drop it
+  async function waitForSave() {
+    for (let i = 0; i < 50 && (pendingSaveRef.current || saveInFlightRef.current); i++) await new Promise(ok => setTimeout(ok, 100));
+  }
   async function syncNow() {
+    await waitForSave();
     setSyncing(true);
     try {
       const r = await fetch("/api/sync", {
@@ -336,6 +404,7 @@ function App() {
   // when the 2h cooldown allows, otherwise whatever the server has now
   // (the scheduled stock check keeps that current)
   async function exportOOS(atelier) {
+    await waitForSave();
     let d = syncEligible ? await syncNow() : null;
     if (!d) {
       d = await apiGet();
@@ -407,7 +476,8 @@ function App() {
     const b = bundles.find(x => x.id === u.id);
     const isStale = b ? compute(b).stale : false;
     setBundleJumpTarget(u);
-    setTab(isStale ? "worklist" : "bundles");
+    if (isStale) setTodoView("prices");
+    setTab(isStale ? "todo" : "bundles");
   }
 
   // deletion also excludes the item from future Shopify syncs (by SKU for
@@ -610,31 +680,22 @@ function App() {
     c: compute(b)
   })).filter(x => x.c.hasOOS).sort((a, b) => a.b.name.localeCompare(b.b.name));
   const discontinuedCount = products.filter(p => !p.active).length + bundles.filter(b => b.active === false).length;
-  const reorderCount = Object.values(reorder.items || {}).filter(r => r.below).length;
   // freshest stock check across all products, for the "synced" indicator
   const stockUpdatedAt = products.reduce((max, p) => p.stockUpdatedAt && p.stockUpdatedAt > (max || "") ? p.stockUpdatedAt : max, null);
   const openTab = k => {
     setTab(k);
     if (k === "products") setProductJumpQuery("");
-    if (k === "worklist" || k === "bundles") setBundleJumpTarget(null);
+    if (k === "todo" || k === "bundles") setBundleJumpTarget(null);
   };
-  const pageTitle = tab === "reorder" ? (ZOHO_TABLES.find(([k]) => k === zohoTable) || [, TAB_LABELS.reorder])[1] : TAB_LABELS[tab];
+  const pageTitle = TAB_LABELS[tab];
+  // items at or below their reorder level, for the Reorder list tab
+  const belowCount = Object.values(reorder.items || {}).filter(r => r.below).length;
   return /*#__PURE__*/React.createElement("div", {
     className: "shell"
   }, /*#__PURE__*/React.createElement(Sidebar, {
     tab: tab,
     onTab: openTab,
-    groups: [["Inventory", [["reorder", reorderCount, true]]], ["Catalog", [["bundles"], ["products"], ["whereused"]]], ["Needs attention", [["worklist", staleList.length, true], ["stock", oosList.length, true], ["discontinued", discontinuedCount], ...(IS_TEAM ? [] : [["trash", trash.length]])]]],
-    sub: {
-      under: "reorder",
-      items: ZOHO_TABLES,
-      counts: zohoCounts,
-      value: zohoTable,
-      onPick: k => {
-        setZohoTable(k);
-        setTab("reorder");
-      }
-    }
+    groups: [["Inventory", [["zoho"], ...(IS_TEAM ? [] : [["sales"]])]], ["Catalog", [["products"], ["bundles"]]], ["Upkeep", [["todo", staleList.length + oosList.length, true], ["archive"]]]]
   }, /*#__PURE__*/React.createElement("div", {
     className: "sbStats"
   }, /*#__PURE__*/React.createElement("b", null, products.length), " products \xB7 ", /*#__PURE__*/React.createElement("b", null, bundles.length), " bundles", /*#__PURE__*/React.createElement("div", {
@@ -684,11 +745,11 @@ function App() {
   }, /*#__PURE__*/React.createElement(BarSlots.Provider, {
     value: barSlots
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(TopBar, {
-    crumb: tab === "reorder" ? "Zoho Inventory" : null,
+    crumb: tab === "zoho" || tab === "sales" ? "Zoho Inventory" : null,
     title: pageTitle,
     onHeight: setHeaderH,
     onSlots: setBarSlots
-  }), !["bundles", "products", "whereused", "reorder"].includes(tab) && /*#__PURE__*/React.createElement(InBar, {
+  }), !["bundles", "products", "zoho", "sales"].includes(tab) && /*#__PURE__*/React.createElement(InBar, {
     slot: "search",
     key: "search:" + tab
   }, /*#__PURE__*/React.createElement(GlobalSearch, {
@@ -752,7 +813,11 @@ function App() {
       confirmState.resolve(result);
       setConfirmState(null);
     }
-  })), tab === "worklist" && /*#__PURE__*/React.createElement(Worklist, {
+  })), tab === "todo" && /*#__PURE__*/React.createElement(PageSwitch, {
+    value: todoView,
+    onChange: setTodoView,
+    options: [["prices", `Prices to update (${staleList.length})`], ["stock", `Out of stock (${oosList.length})`]]
+  }), tab === "todo" && todoView === "prices" && /*#__PURE__*/React.createElement(Worklist, {
     staleList: staleList,
     bundles: bundles,
     setBundles: setBundles,
@@ -789,11 +854,7 @@ function App() {
     pushPrice: IS_TEAM ? null : pushPriceToShopify,
     initialQuery: productJumpQuery,
     onJumpToBundle: jumpToBundle
-  }), tab === "whereused" && /*#__PURE__*/React.createElement(WhereUsed, {
-    bundles: bundles,
-    products: products,
-    compute: compute
-  }), tab === "stock" && /*#__PURE__*/React.createElement(StockIssues, {
+  }), tab === "todo" && todoView === "stock" && /*#__PURE__*/React.createElement(StockIssues, {
     oosList: oosList,
     bundles: bundles,
     setBundles: setBundles,
@@ -806,21 +867,40 @@ function App() {
     pushPrice: IS_TEAM ? null : pushPriceToShopify,
     onJumpToProduct: jumpToProduct,
     onExport: exportOOS
-  }), tab === "discontinued" && /*#__PURE__*/React.createElement(Discontinued, {
+  }), tab === "archive" && !IS_TEAM && /*#__PURE__*/React.createElement(PageSwitch, {
+    value: archiveView,
+    onChange: setArchiveView,
+    options: [["discontinued", `Discontinued (${discontinuedCount})`], ["trash", `Trash (${trash.length})`]]
+  }), tab === "archive" && (IS_TEAM || archiveView === "discontinued") && /*#__PURE__*/React.createElement(Discontinued, {
     products: products,
     setProducts: setProducts,
     bundles: bundles,
     setBundles: setBundles,
     onDeleteProduct: deleteProduct,
     onDeleteBundle: deleteBundle
-  }), tab === "reorder" && /*#__PURE__*/React.createElement(Reorder, {
+  }), tab === "zoho" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(PageSwitch, {
+    value: zohoTable,
+    onChange: setZohoTable,
+    options: ZOHO_TABLES.map(([k, label]) => {
+      const n = k === "reorder" ? belowCount : zohoCounts[k];
+      return [k, n != null ? `${label} (${n})` : label];
+    })
+  }), /*#__PURE__*/React.createElement(Reorder, {
+    key: zohoTable,
     doc: reorder,
     setDoc: setReorder,
     table: zohoTable,
     stickyTop: headerH,
     flash: flash,
     products: products
-  }), tab === "trash" && !IS_TEAM && /*#__PURE__*/React.createElement(Trash, {
+  })), tab === "sales" && !IS_TEAM && /*#__PURE__*/React.createElement(Reorder, {
+    doc: reorder,
+    setDoc: setReorder,
+    table: "sales",
+    stickyTop: headerH,
+    flash: flash,
+    products: products
+  }), tab === "archive" && !IS_TEAM && archiveView === "trash" && /*#__PURE__*/React.createElement(Trash, {
     trash: trash,
     onRestore: restoreFromTrash,
     onDelete: deleteFromTrash,
@@ -828,27 +908,68 @@ function App() {
   }))))));
 }
 
-// Zoho Inventory's tables, listed under it in the sidebar (the team's
-// /inventory page has no sidebar, so Reorder shows them as buttons there)
-const ZOHO_TABLES = [["items", "Items by warehouse"], ["composites", "Composite items"], ["marble", "Marble Atelier"], ["reorder", "Reorder list"], ["ceramitec", "Ceramitec bundles"], ...(IS_TEAM ? [] : [["sales", "Sales"]])];
+// the Stock page's tables, picked with the switch at its top
+const ZOHO_TABLES = [["items", "Items by warehouse"], ["composites", "Composite items"], ["marble", "Marble Atelier"], ["ceramitec", "Ceramitec bundles"], ["reorder", "Reorder list"]];
+
+// picks what a page shows. Underlined tabs, so it doesn't read as one more
+// row of filter pills (same look on every page)
+function PageSwitch({
+  options,
+  value,
+  onChange
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    role: "tablist",
+    style: {
+      display: "flex",
+      gap: 20,
+      flexWrap: "wrap",
+      borderBottom: "1px solid var(--line)",
+      marginBottom: 14
+    }
+  }, options.map(([k, label]) => {
+    const on = value === k;
+    return /*#__PURE__*/React.createElement("button", {
+      key: k,
+      role: "tab",
+      "aria-selected": on,
+      onClick: () => onChange(k),
+      style: {
+        background: "none",
+        border: "none",
+        borderBottom: `2px solid ${on ? "var(--ink)" : "transparent"}`,
+        marginBottom: -1,
+        padding: "6px 1px 9px",
+        fontSize: 14,
+        fontWeight: on ? 700 : 500,
+        color: on ? "var(--ink)" : "var(--muted)",
+        cursor: "pointer"
+      }
+    }, label);
+  }));
+}
 
 // each tab's name: in the sidebar and as the page title
 const TAB_LABELS = {
-  reorder: "Zoho Inventory",
-  bundles: "Bundles",
+  zoho: "Stock",
+  sales: "Sales",
   products: "Products",
-  whereused: "In bundles",
-  worklist: "Needs updating",
-  stock: "Out of stock",
-  discontinued: "Discontinued",
-  trash: "Trash"
+  bundles: "Bundles",
+  todo: "To do",
+  archive: "Archive"
 };
 const NAV_ICONS = {
-  reorder: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
+  zoho: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
     d: "M3 8l9-5 9 5v8l-9 5-9-5z"
   }), /*#__PURE__*/React.createElement("path", {
     d: "M3 8l9 5 9-5M12 13v8"
   })),
+  sales: /*#__PURE__*/React.createElement("path", {
+    d: "M4 20V11M10 20V5M16 20v-6M2 20h20"
+  }),
+  products: /*#__PURE__*/React.createElement("path", {
+    d: "M4 7h16M4 12h16M4 17h10"
+  }),
   bundles: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("rect", {
     x: "3",
     y: "3",
@@ -874,55 +995,33 @@ const NAV_ICONS = {
     height: "8",
     rx: "1.5"
   })),
-  products: /*#__PURE__*/React.createElement("path", {
-    d: "M4 7h16M4 12h16M4 17h10"
-  }),
-  whereused: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
-    cx: "11",
-    cy: "11",
-    r: "6"
-  }), /*#__PURE__*/React.createElement("path", {
-    d: "M20 20l-4.5-4.5"
-  })),
-  worklist: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
+  todo: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
     cx: "12",
     cy: "12",
     r: "9"
   }), /*#__PURE__*/React.createElement("path", {
-    d: "M12 7v5l3 2"
+    d: "M8 12l3 3 5-6"
   })),
-  stock: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
-    cx: "12",
-    cy: "12",
-    r: "9"
+  archive: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("rect", {
+    x: "3",
+    y: "4",
+    width: "18",
+    height: "5",
+    rx: "1"
   }), /*#__PURE__*/React.createElement("path", {
-    d: "M6 18L18 6"
-  })),
-  discontinued: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("rect", {
-    x: "4",
-    y: "5",
-    width: "16",
-    height: "15",
-    rx: "2"
-  }), /*#__PURE__*/React.createElement("path", {
-    d: "M4 10h16"
-  })),
-  trash: /*#__PURE__*/React.createElement("path", {
-    d: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
-  })
+    d: "M5 9v10h14V9M10 13h4"
+  }))
 };
 
 // the app's navigation, down the left so the whole height is left for the
-// open tab. groups: [heading, [[key, count, needsAttention]]]; sub lists
-// the Zoho tables under their tab. Collapses to icons (remembered in this
-// browser, and always on narrow screens); the footer (children) holds the
-// status and Sync button.
+// open tab. groups: [heading, [[key, count, needsAttention]]]. Collapses to
+// icons (remembered in this browser, and always on narrow screens); the footer
+// (children) holds the status and Sync button.
 const NARROW = "(max-width: 760px)";
 function Sidebar({
   groups,
   tab,
   onTab,
-  sub,
   children
 }) {
   const [slim, setSlim] = useState(() => {
@@ -946,43 +1045,6 @@ function Sidebar({
     setSlim(!slim);
   };
   const collapsed = slim || narrow;
-  // collapsed, the sub list (Zoho tables) opens as a pop-out beside the
-  // rail — hover or click its icon — so collapsing never changes the page
-  const [flyTop, setFlyTop] = useState(null); // px from the top, or null when shut
-  const flyClose = useRef(null);
-  const openFly = wrap => {
-    clearTimeout(flyClose.current);
-    setFlyTop(wrap.getBoundingClientRect().top);
-  };
-  const closeFlySoon = () => {
-    flyClose.current = setTimeout(() => setFlyTop(null), 160);
-  };
-  useEffect(() => {
-    if (!collapsed) setFlyTop(null);
-  }, [collapsed]);
-  useEffect(() => {
-    if (flyTop == null) return;
-    const away = e => !e.target.closest(".sbFlyWrap") && setFlyTop(null);
-    const esc = e => e.key === "Escape" && setFlyTop(null);
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [flyTop]);
-  const subButtons = (k, after) => sub.items.map(([sk, slabel]) => /*#__PURE__*/React.createElement("button", {
-    key: sk,
-    className: `sbItem${tab === k && sub.value === sk ? " on" : ""}`,
-    onClick: () => {
-      sub.onPick(sk);
-      if (after) after();
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "sbLabel"
-  }, slabel), sub.counts[sk] != null && /*#__PURE__*/React.createElement("span", {
-    className: "sbSubCount"
-  }, sub.counts[sk])));
   return /*#__PURE__*/React.createElement("aside", {
     className: `sidebar${collapsed ? " slim" : ""}`
   }, /*#__PURE__*/React.createElement("div", {
@@ -997,16 +1059,10 @@ function Sidebar({
     className: "sbGroup"
   }, heading), items.map(([k, n, hot]) => {
     const label = TAB_LABELS[k];
-    const hasSub = sub && sub.under === k;
-    const item = /*#__PURE__*/React.createElement("button", {
+    return /*#__PURE__*/React.createElement("button", {
+      key: k,
       className: `sbItem${tab === k ? " on" : ""}${hot && n ? " dot" : ""}`,
-      onClick: e => {
-        onTab(k);
-        // only opens: on touch screens the tap's mouseenter has
-        // already opened it, and a toggle would shut it again.
-        // Picking a table, Escape or a click elsewhere closes it.
-        if (hasSub && collapsed) openFly(e.currentTarget.parentElement);
-      },
+      onClick: () => onTab(k),
       title: n ? `${label} (${n})` : label
     }, /*#__PURE__*/React.createElement("svg", {
       viewBox: "0 0 24 24",
@@ -1016,25 +1072,6 @@ function Sidebar({
     }, label), n ? /*#__PURE__*/React.createElement("span", {
       className: `sbCount${hot ? " hot" : ""}`
     }, n) : null);
-    if (!hasSub) return /*#__PURE__*/React.createElement(React.Fragment, {
-      key: k
-    }, item);
-    return /*#__PURE__*/React.createElement("div", {
-      key: k,
-      className: "sbFlyWrap",
-      onMouseEnter: collapsed ? e => openFly(e.currentTarget) : undefined,
-      onMouseLeave: collapsed ? closeFlySoon : undefined
-    }, item, /*#__PURE__*/React.createElement("div", {
-      className: "sbSub"
-    }, subButtons(k)), collapsed && flyTop != null && /*#__PURE__*/React.createElement("div", {
-      className: "sbFly",
-      style: {
-        top: flyTop
-      },
-      "aria-label": label
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "sbFlyHead"
-    }, label), subButtons(k, () => setFlyTop(null))));
   }))), /*#__PURE__*/React.createElement("div", {
     className: "sbFoot"
   }, children, !narrow && /*#__PURE__*/React.createElement("button", {
@@ -3210,155 +3247,6 @@ function Products({
   }, "Load more (", filtered.length - shown.length, " more)")));
 }
 
-// "In bundles" — search a product, see every bundle that uses it.
-// Groups results by matching product; a product with no bundles is left out.
-function WhereUsed({
-  bundles,
-  products,
-  compute
-}) {
-  const [q, setQ] = useState("");
-  const results = useMemo(() => {
-    if (!q.trim()) return null;
-    return products.filter(p => matchText(q, p.name + " " + (p.sku || ""))).map(p => ({
-      p,
-      used: bundles.filter(b => b.items.some(it => it.productId === p.id))
-    })).filter(x => x.used.length > 0).sort((a, b) => b.used.length - a.used.length);
-  }, [q, products, bundles]);
-  let totalBundles = 0;
-  if (results) {
-    const s = new Set();
-    results.forEach(x => x.used.forEach(b => s.add(b.id)));
-    totalBundles = s.size;
-  }
-  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(InBar, {
-    slot: "search"
-  }, /*#__PURE__*/React.createElement("input", {
-    placeholder: "Search a product \u2014 e.g. dot pink \u2014 to see its bundles\u2026",
-    value: q,
-    onChange: e => setQ(e.target.value),
-    className: "barSearch",
-    style: barSearch
-  })), !q.trim() && /*#__PURE__*/React.createElement("p", {
-    style: {
-      ...note,
-      marginTop: 4
-    }
-  }, "Type a product name or SKU. Every bundle that contains a matching product is listed below. Products that aren't in any bundle won't show up here."), results && results.length === 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      textAlign: "center",
-      padding: "36px 20px",
-      background: "var(--card)",
-      border: "1px dashed var(--line)",
-      borderRadius: 6,
-      color: "var(--muted)",
-      marginTop: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 600,
-      color: "var(--ink)",
-      marginBottom: 4
-    }
-  }, "No bundle uses a product matching \u201C", q, "\u201D"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13
-    }
-  }, "The product may exist but isn't a component of any bundle yet.")), results && results.length > 0 && /*#__PURE__*/React.createElement("p", {
-    style: {
-      ...note,
-      marginTop: 14
-    }
-  }, results.length, " matching product", results.length > 1 ? "s" : "", " \xB7", " ", totalBundles, " bundle", totalBundles > 1 ? "s" : ""), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 16
-    }
-  }, results && results.map(({
-    p,
-    used
-  }) => /*#__PURE__*/React.createElement("div", {
-    key: p.id,
-    style: {
-      background: "var(--card)",
-      border: "1px solid var(--line)",
-      borderRadius: 6,
-      overflow: "hidden"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "baseline",
-      gap: 8,
-      padding: "11px 16px",
-      borderBottom: "1px solid var(--line)"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14.5,
-      fontWeight: 700
-    }
-  }, p.name), p.sku && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11.5,
-      color: "var(--muted)"
-    }
-  }, p.sku), /*#__PURE__*/React.createElement("span", {
-    style: {
-      marginLeft: "auto",
-      fontSize: 12.5,
-      color: "var(--muted)"
-    }
-  }, "in ", used.length, " bundle", used.length > 1 ? "s" : "")), used.map(b => {
-    const c = compute(b);
-    const it = b.items.find(i => i.productId === p.id);
-    return /*#__PURE__*/React.createElement("div", {
-      key: b.id,
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "9px 16px",
-        borderBottom: "1px solid var(--line)"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 8,
-        height: 8,
-        borderRadius: 999,
-        flexShrink: 0,
-        background: c.empty ? "var(--line)" : c.stale ? "var(--clay)" : "var(--sage)"
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        flex: 1,
-        fontSize: 14,
-        fontWeight: 600
-      }
-    }, b.name, b.sku && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11.5,
-        color: "var(--muted)",
-        marginLeft: 6
-      }
-    }, b.sku)), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 12.5,
-        color: "var(--muted)"
-      }
-    }, "qty ", it ? it.qty : "—"), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 13,
-        fontWeight: 600,
-        minWidth: 70,
-        textAlign: "right"
-      }
-    }, c.empty ? "—" : money(c.giftIncluded ? b.storedPrice : c.target)));
-  })))));
-}
-
 // the docx library is only needed for the out-of-stock download, so it's
 // pulled from the CDN on first use rather than on every page load
 let docxLoading = null;
@@ -3888,14 +3776,13 @@ function Discontinued({
 // on Shopify (active in the catalog); composites are every active one in
 // Zoho; the Marble Atelier line gets its own table, out of both.
 // how many rows each Zoho table holds (warehouse ones only once pulled)
-function zohoTableCounts(tables, ws, below) {
+function zohoTableCounts(tables, ws) {
   return {
     ...(ws ? {
       items: tables.items.length,
       composites: tables.composites.length,
       marble: tables.marble.length
     } : {}),
-    reorder: below,
     ceramitec: CERAMITEC_BUNDLE_SKUS.length
   };
 }
@@ -3922,6 +3809,14 @@ function Reorder({
   table
 }) {
   const [q, setQ] = useState("");
+  // pieces sold per Zoho item (admin only), shown beside "still short"
+  const [salesById, setSalesById] = useState(null);
+  useEffect(() => {
+    if (IS_TEAM || table !== "reorder") return;
+    fetch("/api/sales?rows=1").then(r => r.ok ? r.json() : null)
+    // empty or half-loaded sales would read as "sold nothing", so wait for all of it
+    .then(d => d && d.rows && d.rows.length && (d.yearComplete ?? !d.pending) && setSalesById(new Map(d.rows.map(x => [x.id, x])))).catch(() => {});
+  }, [table]);
   const [vendor, setVendor] = useState("Hollyhock");
   const [view, setView] = useState("below"); // reorder list filter: below | short | restocked | all
   const [sortBy, setSortBy] = useState("vendor"); // vendor | name | stock | receive | expected
@@ -4150,7 +4045,7 @@ function Reorder({
     value: v
   }, v, " (", n, ")")))), /*#__PURE__*/React.createElement(InBar, {
     slot: "actions"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, table !== "sales" && /*#__PURE__*/React.createElement("button", {
     onClick: refresh,
     disabled: refreshing || coolingDown,
     title: coolingDown ? `Updated ${timeAgo(doc.lastSyncAt)}. The button can be used once every 2h — available again in ${fmtLeft(cooldownLeft)}. It also refreshes on its own every 8h.` : "Pull the latest stock, reorder levels and open POs from Zoho. Your dates and notes are kept.",
@@ -4234,11 +4129,11 @@ function Reorder({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: showVendor ? 1170 : 1030
+      minWidth: (showVendor ? 1170 : 1030) + (salesById ? 42 : 0)
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      ...reorderGrid(showVendor),
+      ...reorderGrid(showVendor, !!salesById),
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       fontSize: 11,
@@ -4247,7 +4142,7 @@ function Reorder({
       textTransform: "uppercase",
       color: "var(--muted)"
     }
-  }, th("Name", "name"), showVendor && th("Vendor", "vendor"), th("Reorder level", null, "center"), th("Stock on hand", "stock", "center"), th("To be received", "receive", "center"), th("Expected by", "expected"), th("Notes"), th("Still short", "short", "center")), !shown.length && /*#__PURE__*/React.createElement("div", {
+  }, th("Name", "name"), showVendor && th("Vendor", "vendor"), th("Reorder level", null, "center"), th("Stock on hand", "stock", "center"), th("To be received", "receive", "center"), th("Expected by", "expected"), th("Notes"), th("Still short", "short", "center"), salesById && th("Sold (1 yr)", null, "center")), !shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "30px 16px",
       textAlign: "center",
@@ -4258,7 +4153,8 @@ function Reorder({
     key: r.id,
     r: r,
     onSave: saveRow,
-    showVendor: showVendor
+    showVendor: showVendor,
+    sold: salesById ? salesById.get(r.id) || null : undefined
   })))), /*#__PURE__*/React.createElement("p", {
     style: {
       ...note,
@@ -4368,25 +4264,381 @@ function ExpectedDateCell({
   }, "+ Add date"));
 }
 
-// Pieces sold and their value per item, counted back from today. Filled by
-// scripts/zoho-sales.js; see lib/zohoSales.js for what counts as a sale.
-const salesGrid = {
-  display: "grid",
-  gridTemplateColumns: "minmax(240px, 1fr) 130px 130px 130px",
-  gap: 10
-};
-const SALES_SPANS = [["month", "Last month"], ["six", "Last 6 months"], ["year", "Last year"]];
+// Pieces sold and their value per item over any dates, optionally beside the
+// same dates a year earlier. scripts/zoho-sales.js sends per-day totals by
+// item (see lib/zohoSales.js for what counts as a sale), so any range adds up
+// here without another call.
 const rupees = n => "₹" + Math.round(n || 0).toLocaleString("en-IN");
-// packaging: given away at ₹0 all year and named like packaging, so a real
-// product that only went out free still counts as a product
-const PACKAGING_WORDS = /(box|cutout|bag|envelope|carton)/i;
-const isPackaging = r => r.year.value === 0 && PACKAGING_WORDS.test(r.name);
+// big rupee amounts in lakh / crore, for the summary tiles
+const rupeesShort = n => n >= 1e7 ? `₹${(n / 1e7).toFixed(2)} Cr` : n >= 1e5 ? `₹${(n / 1e5).toFixed(1)} L` : rupees(n);
+const pcs = n => Math.round(n || 0).toLocaleString("en-IN");
+// packaging: never charged for and named like packaging, so a real product
+// that only went out free still counts as a product
+const PACKAGING_WORDS = /\b(box(es)?|cutouts?|bags?|envelopes?|cartons?)\b/i;
+const isPackaging = (name, everValue) => everValue === 0 && PACKAGING_WORDS.test(name || "");
+// "2026-03-31" less 1 month → "2026-02-28" (same rule as lib/zohoSales.js)
+function monthsBackISO(date, months) {
+  const [y, m, d] = date.split("-").map(Number);
+  const first = new Date(Date.UTC(y, m - 1 - months, 1));
+  const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(d, lastDay));
+  return first.toISOString().slice(0, 10);
+}
+const SALES_PRESETS = [["1m", "1 month", 1], ["3m", "3 months", 3], ["6m", "6 months", 6], ["1y", "1 year", 12]];
+const fmtDay = d => new Date(d + "T00:00:00").toLocaleDateString("en-IN", {
+  day: "numeric",
+  month: "short",
+  year: "numeric"
+});
+// what the chosen dates are compared with
+const COMPARE_MODES = [["off", "Off"], ["prev", "Previous period"], ["year", "Last year"], ["2y", "2 years ago"]];
+const COMPARE_SHORT = {
+  prev: "previous period",
+  year: "last year",
+  "2y": "2 years ago"
+};
+const DAY_MS = 24 * 60 * 60 * 1000;
+const addDays = (date, n) => new Date(Date.parse(date + "T00:00:00Z") + n * DAY_MS).toISOString().slice(0, 10);
+// prev: the same number of days just before; year / 2y: the same dates back
+function compareRange(range, mode) {
+  if (!range || mode === "off") return null;
+  if (mode === "prev") {
+    const days = Math.round((Date.parse(range.to) - Date.parse(range.from)) / DAY_MS) + 1;
+    return {
+      from: addDays(range.from, -days),
+      to: addDays(range.from, -1)
+    };
+  }
+  const back = mode === "2y" ? 24 : 12;
+  return {
+    from: monthsBackISO(range.from, back),
+    to: monthsBackISO(range.to, back)
+  };
+}
+const changePct = (now, before) => before ? Math.round((now - before) / before * 100) : null;
+// how an item moved against last year, for the filter above the table
+const trendOf = r => !r.lastPieces ? "new" : !r.pieces ? "stopped" : r.pieces > r.lastPieces ? "up" : r.pieces < r.lastPieces ? "down" : "same";
+const TRENDS = [["all", "All"], ["up", "Selling more"], ["down", "Selling less"], ["new", "New"], ["stopped", "Stopped"]];
+const dateInput = {
+  padding: "5px 8px",
+  border: "1px solid var(--line)",
+  borderRadius: 4,
+  font: "inherit",
+  fontSize: 13,
+  background: "#fff",
+  color: "var(--ink)"
+};
+
+// the 12 calendar months ending this month, as "2026-11"
+const lastTwelveMonths = today => {
+  const out = [];
+  for (let i = 11; i >= 0; i--) out.push(monthsBackISO(today, i).slice(0, 7));
+  return out;
+};
+// the current month is only part-way through, so it's marked
+const monthName = (m, today) => new Date(m + "-01T00:00:00").toLocaleDateString("en-IN", {
+  month: "short"
+}) + (m === today.slice(0, 7) ? " (so far)" : "");
+
+// an item's pieces per month as a line, the latest month marked
+function Sparkline({
+  series,
+  months,
+  today,
+  width = 110,
+  height = 28
+}) {
+  const max = Math.max(1, ...series);
+  const step = width / (series.length - 1);
+  const yOf = v => (height - 3 - v / max * (height - 6)).toFixed(1);
+  const points = series.map((v, i) => `${(i * step).toFixed(1)},${yOf(v)}`).join(" ");
+  return /*#__PURE__*/React.createElement("svg", {
+    width: width,
+    height: height,
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": "Pieces per month"
+  }, /*#__PURE__*/React.createElement("title", null, months.map((m, i) => `${monthName(m, today)}: ${pcs(series[i])}`).join("\n")), /*#__PURE__*/React.createElement("polyline", {
+    points: points,
+    fill: "none",
+    stroke: "var(--muted)",
+    strokeOpacity: "0.55",
+    strokeWidth: "2",
+    strokeLinejoin: "round",
+    strokeLinecap: "round"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: width - 1,
+    cy: yOf(series[series.length - 1]),
+    r: "3",
+    fill: "var(--ink)"
+  }));
+}
+
+// light to dark brass: one hue, so darker simply means more
+const HEAT_RAMP = ["#f6efe1", "#ead8b4", "#d9bd85", "#c29f5a", "#a8843f", "#7f6128", "#5a4417"];
+// items down, months across; each row shaded against its own busiest month, so
+// it shows when an item peaks rather than which item sells most. before: the
+// label for the earlier year when comparing ("a year before"), else null, and
+// each box then shows that year's same month underneath
+function SeasonMap({
+  rows,
+  months,
+  today,
+  before
+}) {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      fontSize: 12.5,
+      color: "var(--muted)",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginRight: 4
+    }
+  }, "Quieter month"), HEAT_RAMP.map(c => /*#__PURE__*/React.createElement("span", {
+    key: c,
+    style: {
+      width: 14,
+      height: 12,
+      borderRadius: 2,
+      background: c,
+      display: "inline-block"
+    }
+  })), /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 4
+    }
+  }, "Busier month")), /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 10px",
+      fontSize: 12.5,
+      color: "var(--muted)",
+      lineHeight: 1.5
+    }
+  }, "Each box is the pieces of that item sold in that month, over the last 12 months whatever dates are picked above. Darker boxes are that item's busiest months, so you can see when it peaks and order ahead.", before ? ` The small number underneath is the same month ${before}.` : " Turn on Compare to see the same months a year or two before."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 6,
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      minWidth: 860,
+      borderCollapse: "collapse",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    style: {
+      ...heatHead,
+      textAlign: "left",
+      padding: "10px 14px"
+    }
+  }, "Item"), months.map(m => /*#__PURE__*/React.createElement("th", {
+    key: m,
+    style: heatHead
+  }, monthName(m, today))), /*#__PURE__*/React.createElement("th", {
+    style: {
+      ...heatHead,
+      textAlign: "right",
+      padding: "10px 14px"
+    }
+  }, "12 months"))), /*#__PURE__*/React.createElement("tbody", null, !rows.length && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: 14,
+    style: {
+      padding: "30px 16px",
+      textAlign: "center",
+      color: "var(--muted)"
+    }
+  }, "No items match.")), rows.map(r => {
+    const max = Math.max(1, ...r.series);
+    return /*#__PURE__*/React.createElement("tr", {
+      key: r.id
+    }, /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "6px 14px",
+        borderBottom: "1px solid var(--line)",
+        fontWeight: 600,
+        minWidth: 180,
+        maxWidth: 260,
+        lineHeight: 1.3
+      }
+    }, r.name), r.series.map((v, i) => {
+      const step = v ? Math.min(HEAT_RAMP.length - 1, 1 + Math.floor(v / max * (HEAT_RAMP.length - 1.01))) : 0;
+      return /*#__PURE__*/React.createElement("td", {
+        key: i,
+        title: `${r.name} · ${monthName(months[i], today)}: ${pcs(v)} pcs${before ? ` (same month ${before}: ${pcs(r.beforeSeries[i])})` : ""}`,
+        style: {
+          background: HEAT_RAMP[step],
+          color: step >= 4 ? "#fff" : "var(--ink)",
+          border: "2px solid var(--card)",
+          height: before ? 38 : 30,
+          lineHeight: 1.15,
+          minWidth: 44,
+          textAlign: "center",
+          fontSize: 11.5,
+          fontVariantNumeric: "tabular-nums"
+        }
+      }, v ? pcs(v) : "", before && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          opacity: 0.75
+        }
+      }, r.beforeSeries[i] ? pcs(r.beforeSeries[i]) : "–"));
+    }), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "6px 14px",
+        borderBottom: "1px solid var(--line)",
+        textAlign: "right",
+        fontWeight: 700
+      }
+    }, pcs(r.series.reduce((a, b) => a + b, 0)), before && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 500,
+        color: "var(--muted)"
+      }
+    }, pcs(r.beforeSeries.reduce((a, b) => a + b, 0)), " before")));
+  })))));
+}
+const heatHead = {
+  fontSize: 11,
+  letterSpacing: 0.6,
+  textTransform: "uppercase",
+  color: "var(--muted)",
+  fontWeight: 700,
+  padding: "10px 2px",
+  textAlign: "center",
+  borderBottom: "1px solid var(--line)",
+  whiteSpace: "nowrap"
+};
+
+// ▲ 7% / ▼ 32%. Green and red look alike to colour-blind readers, so the arrow
+// and sign carry the direction and the colour only repeats it
+function Delta({
+  pct,
+  size = 12.5
+}) {
+  if (pct == null) return null;
+  const up = pct >= 0;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: size,
+      fontWeight: 600,
+      whiteSpace: "nowrap",
+      color: "var(--ink)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: up ? "var(--sage)" : "var(--clay)"
+    }
+  }, up ? "▲" : "▼"), " ", Math.abs(pct), "%");
+}
+
+// a headline number, against the compared dates
+function StatTile({
+  label,
+  now,
+  last,
+  format,
+  partial,
+  against
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 180px",
+      background: "var(--card)",
+      border: "1px solid var(--line)",
+      borderRadius: 6,
+      padding: "12px 14px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--muted)",
+      fontWeight: 600
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "baseline",
+      gap: 8,
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 24,
+      fontWeight: 700,
+      color: "var(--ink)"
+    }
+  }, format(now)), !partial && /*#__PURE__*/React.createElement(Delta, {
+    pct: changePct(now, last),
+    size: 13.5
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--muted)",
+      marginTop: 2
+    }
+  }, partial ? `${against}: incomplete` : `${against}: ${format(last)}`));
+}
+
+// change against the compared dates: the difference in pieces and the %
+function ChangeBar({
+  r
+}) {
+  const pct = changePct(r.pieces, r.lastPieces);
+  const diff = r.pieces - r.lastPieces;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: 8
+    },
+    title: `${pcs(r.pieces)} pcs vs ${pcs(r.lastPieces)} pcs before`
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--ink)",
+      fontWeight: 600,
+      whiteSpace: "nowrap"
+    }
+  }, diff > 0 ? "+" : diff < 0 ? "−" : "", pcs(Math.abs(diff))), /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 54,
+      textAlign: "left"
+    }
+  }, pct == null ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "var(--muted)"
+    }
+  }, "new") : /*#__PURE__*/React.createElement(Delta, {
+    pct: pct
+  })));
+}
 function SalesTable({
   q
 }) {
   const [doc, setDoc] = useState(null);
-  const [sortBy, setSortBy] = useState("year");
+  const [preset, setPreset] = useState("1y");
+  const [custom, setCustom] = useState({
+    from: "",
+    to: ""
+  });
+  const [view, setView] = useState("list"); // list | season
+  const [compareMode, setCompareMode] = useState("off");
+  const compare = compareMode !== "off";
+  const [trend, setTrend] = useState("all");
+  const [sortBy, setSortBy] = useState("pieces");
   const [ascending, setAscending] = useState(false);
+  // what went out at ₹0 is kept apart from what's sold
   const [packaging, setPackaging] = useState(false);
   useEffect(() => {
     fetch("/api/sales").then(r => r.ok ? r.json() : Promise.reject(r.status)).then(setDoc).catch(status => setDoc({
@@ -4394,13 +4646,123 @@ function SalesTable({
       failed: status === 401 ? "signin" : "error"
     }));
   }, []);
+  const today = doc && doc.today;
+  const range = useMemo(() => {
+    if (!today) return null;
+    if (preset === "custom") {
+      const from = custom.from || monthsBackISO(today, 1);
+      const to = custom.to || today;
+      return from <= to ? {
+        from,
+        to
+      } : {
+        from: to,
+        to: from
+      };
+    }
+    // the day after "n months ago", so the range is exactly n months and the
+    // compared dates a year back don't share its first day
+    return {
+      from: addDays(monthsBackISO(today, SALES_PRESETS.find(p => p[0] === preset)[2]), 1),
+      to: today
+    };
+  }, [today, preset, custom]);
+  const lastYear = compareRange(range, compareMode);
+  const against = COMPARE_SHORT[compareMode];
+  // the compared dates start before the first order kept, so their numbers are low
+  // while older orders are still loading, only what's in so far counts as kept
+  const keptFrom = doc && (doc.pending > 0 ? doc.firstKept || doc.keptFrom : doc.keptFrom || doc.firstKept);
+  const lastYearPartial = !!(compare && keptFrom && lastYear && lastYear.from < keptFrom);
+  const months = useMemo(() => today ? lastTwelveMonths(today) : [], [today]);
+  // the season map's earlier year: two years back for "2 years ago", else one
+  const seasonBack = compareMode === "2y" ? 24 : 12;
+  const beforeMonths = useMemo(() => months.map(m => monthsBackISO(m + "-01", seasonBack).slice(0, 7)), [months, seasonBack]);
+  const everything = useMemo(() => {
+    if (!doc || !doc.daily || !range) return [];
+    const monthIndex = new Map(months.map((m, i) => [m, i]));
+    const beforeIndex = new Map(beforeMonths.map((m, i) => [m, i]));
+    const out = [];
+    for (const [id, days] of Object.entries(doc.daily)) {
+      const item = doc.items[id] || {};
+      let pieces = 0,
+        value = 0,
+        lastPieces = 0,
+        lastValue = 0,
+        ever = 0;
+      const series = months.map(() => 0);
+      const beforeSeries = months.map(() => 0);
+      for (const [d, p, v] of days) {
+        ever += v;
+        const mi = monthIndex.get(d.slice(0, 7));
+        if (mi != null) series[mi] += p;
+        const bi = beforeIndex.get(d.slice(0, 7));
+        if (bi != null) beforeSeries[bi] += p;
+        if (d >= range.from && d <= range.to) {
+          pieces += p;
+          value += v;
+        }
+        if (lastYear && d >= lastYear.from && d <= lastYear.to) {
+          lastPieces += p;
+          lastValue += v;
+        }
+      }
+      const inRange = !!(pieces || compare && lastPieces);
+      const seasonTotal = series.reduce((a, b) => a + b, 0);
+      if (!inRange && !seasonTotal) continue;
+      out.push({
+        inRange,
+        seasonTotal,
+        id,
+        name: item.name || id,
+        sku: item.sku || "",
+        pieces,
+        value,
+        lastPieces,
+        lastValue,
+        delta: pieces - lastPieces,
+        change: changePct(pieces, lastPieces),
+        valueChange: changePct(value, lastValue),
+        packaging: isPackaging(item.name, ever),
+        series,
+        beforeSeries
+      });
+    }
+    return out;
+  }, [doc, range, compareMode, months, beforeMonths]);
+  const all = useMemo(() => everything.filter(r => r.inRange), [everything]);
+  const seasonRows = useMemo(() => everything.filter(r => r.seasonTotal > 0 && r.packaging === packaging && matchText(q, `${r.name} ${r.sku}`)).sort((a, b) => b.seasonTotal - a.seasonTotal || a.name.localeCompare(b.name)), [everything, packaging, q]);
+  const inTab = useMemo(() => all.filter(r => r.packaging === packaging), [all, packaging]);
+  const trendCounts = useMemo(() => {
+    const c = {
+      all: inTab.length
+    };
+    for (const r of inTab) c[trendOf(r)] = (c[trendOf(r)] || 0) + 1;
+    return c;
+  }, [inTab]);
+  const useTrend = compare && !lastYearPartial ? trend : "all";
   const shown = useMemo(() => {
-    const rows = (doc && doc.rows || []).filter(r => isPackaging(r) === packaging && matchText(q, `${r.name} ${r.sku}`));
+    const rows = inTab.filter(r => (useTrend === "all" || trendOf(r) === useTrend) && matchText(q, `${r.name} ${r.sku}`));
     const dir = ascending ? 1 : -1;
     const byName = (a, b) => a.name.localeCompare(b.name);
-    return rows.sort((a, b) => sortBy === "name" ? dir * byName(a, b) : dir * (a[sortBy].pieces - b[sortBy].pieces) || byName(a, b));
-  }, [doc, q, sortBy, ascending, packaging]);
-  const packagingCount = useMemo(() => (doc && doc.rows || []).filter(isPackaging).length, [doc]);
+    return rows.sort((a, b) => {
+      if (sortBy === "name") return dir * byName(a, b);
+      // items with nothing to compare always go last
+      if (a[sortBy] == null !== (b[sortBy] == null)) return a[sortBy] == null ? 1 : -1;
+      return dir * ((a[sortBy] || 0) - (b[sortBy] || 0)) || byName(a, b);
+    });
+  }, [inTab, q, sortBy, ascending, useTrend]);
+  const totals = useMemo(() => inTab.reduce((t, r) => ({
+    pieces: t.pieces + r.pieces,
+    value: t.value + r.value,
+    lastPieces: t.lastPieces + r.lastPieces,
+    lastValue: t.lastValue + r.lastValue
+  }), {
+    pieces: 0,
+    value: 0,
+    lastPieces: 0,
+    lastValue: 0
+  }), [inTab]);
+  const packagingCount = useMemo(() => all.filter(r => r.packaging).length, [all]);
   if (!doc) return /*#__PURE__*/React.createElement("div", {
     style: {
       padding: 40,
@@ -4415,7 +4777,16 @@ function SalesTable({
       color: "var(--clay)"
     }
   }, doc.failed === "signin" ? "You've been signed out. Sign in again to see sales." : "Couldn't load sales. Try again in a minute.");
-  const head = (label, key, align) => /*#__PURE__*/React.createElement("div", {
+  if (!doc.daily) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: 40,
+      textAlign: "center",
+      color: "var(--muted)"
+    }
+  }, "Sales are being updated for custom dates. Check back after the next sales refresh.");
+  const cols = compare ? "28px minmax(200px, 1fr) 116px 100px 130px 120px 70px" : "28px minmax(220px, 1fr) 116px 110px 130px";
+  const head = (label, key, align, title) => /*#__PURE__*/React.createElement("div", {
+    title: title,
     onClick: () => {
       setAscending(sortBy === key ? !ascending : key === "name");
       setSortBy(key);
@@ -4428,30 +4799,161 @@ function SalesTable({
   }, label, sortBy === key && (ascending ? " ▲" : " ▼"));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     style: {
-      margin: "0 0 10px",
+      margin: "0 0 12px",
       fontSize: 12.5,
       color: "var(--muted)"
     }
-  }, doc.lastSyncAt ? `From ${(doc.orders || 0).toLocaleString("en-IN")} Zoho sales orders, updated ${timeAgo(doc.lastSyncAt)}. Values exclude tax and shipping.` : "Not pulled from Zoho yet.", doc.pending > 0 && ` Still loading ${doc.pending} older orders, so these numbers are low for now.`), /*#__PURE__*/React.createElement("div", {
+  }, `From Zoho sales orders, updated ${timeAgo(doc.lastSyncAt)}. Values exclude tax and shipping.`, doc.pending > 0 && ` Still loading ${doc.pending} older orders, so some numbers are low for now.`), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
+      flexWrap: "wrap",
+      alignItems: "center",
       marginBottom: 10
     }
-  }, [[false, `Products (${((doc.rows || []).length - packagingCount).toLocaleString("en-IN")})`], [true, `Packaging (${packagingCount.toLocaleString("en-IN")})`]].map(([on, label]) => /*#__PURE__*/React.createElement("button", {
+  }, SALES_PRESETS.map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setPreset(k),
+    style: catPill(preset === k)
+  }, label)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (!custom.from && range) setCustom({
+        from: range.from,
+        to: range.to
+      });
+      setPreset("custom");
+    },
+    style: catPill(preset === "custom")
+  }, "Custom"), preset === "custom" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    "aria-label": "From",
+    value: custom.from,
+    min: keptFrom || undefined,
+    max: today,
+    onChange: e => setCustom(c => ({
+      ...c,
+      from: e.target.value
+    })),
+    style: dateInput
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)",
+      fontSize: 13
+    }
+  }, "to"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    "aria-label": "To",
+    value: custom.to,
+    min: keptFrom || undefined,
+    max: today,
+    onChange: e => setCustom(c => ({
+      ...c,
+      to: e.target.value
+    })),
+    style: dateInput
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      alignItems: "center",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "var(--muted)",
+      marginRight: 2
+    }
+  }, "Compare with"), COMPARE_MODES.map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => {
+      setCompareMode(k);
+      // comparing is about what moved, so lead with the biggest change
+      if (k === "off" !== (compareMode === "off")) {
+        setSortBy(k === "off" ? "pieces" : "delta");
+        setAscending(false);
+      }
+      setTrend("all");
+    },
+    style: catPill(compareMode === k)
+  }, label))), /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: "0 0 12px",
+      fontSize: 13.5
+    }
+  }, /*#__PURE__*/React.createElement("b", null, fmtDay(range.from), " \u2013 ", fmtDay(range.to)), compare ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, ` vs ${fmtDay(lastYear.from)} – ${fmtDay(lastYear.to)}`) : `: ${pcs(totals.pieces)} pcs · ${rupees(totals.value)}`, lastYearPartial && /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "block",
+      fontSize: 12,
+      color: "var(--amber)",
+      marginTop: 2
+    }
+  }, "Orders are only kept from ", fmtDay(keptFrom), ", so the ", against, " numbers are incomplete.")), compare && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(StatTile, {
+    label: "Pieces sold",
+    now: totals.pieces,
+    last: totals.lastPieces,
+    format: pcs,
+    partial: lastYearPartial,
+    against: against
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Value",
+    now: totals.value,
+    last: totals.lastValue,
+    format: rupeesShort,
+    partial: lastYearPartial,
+    against: against
+  }), /*#__PURE__*/React.createElement(StatTile, {
+    label: "Value per piece",
+    now: totals.pieces ? totals.value / totals.pieces : 0,
+    last: totals.lastPieces ? totals.lastValue / totals.lastPieces : 0,
+    format: rupees,
+    partial: lastYearPartial,
+    against: against
+  })), /*#__PURE__*/React.createElement(PageSwitch, {
+    value: view,
+    onChange: setView,
+    options: [["list", "Ranked list"], ["season", "Season map"]]
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      alignItems: "center",
+      marginBottom: 10
+    }
+  }, [[false, `Products (${(all.length - packagingCount).toLocaleString("en-IN")})`], [true, `Packaging (${packagingCount.toLocaleString("en-IN")})`]].map(([on, label]) => /*#__PURE__*/React.createElement("button", {
     key: label,
     onClick: () => setPackaging(on),
+    style: catPill(packaging === on)
+  }, label)), compare && !lastYearPartial && view === "list" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     style: {
-      padding: "6px 12px",
-      borderRadius: 4,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      border: `1px solid ${packaging === on ? "var(--ink)" : "var(--line)"}`,
-      background: packaging === on ? "var(--ink)" : "#fff",
-      color: packaging === on ? "var(--paper)" : "var(--muted)"
+      width: 1,
+      height: 20,
+      background: "var(--line)",
+      margin: "0 6px"
     }
-  }, label))), /*#__PURE__*/React.createElement("div", {
+  }), TRENDS.map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setTrend(k),
+    style: catPill(trend === k)
+  }, label, " (", (trendCounts[k] || 0).toLocaleString("en-IN"), ")")))), view === "season" ? /*#__PURE__*/React.createElement(SeasonMap, {
+    rows: seasonRows,
+    months: months,
+    today: today,
+    before: compare ? seasonBack === 24 ? "2 years before" : "a year before" : null
+  }) : /*#__PURE__*/React.createElement("div", {
     style: {
       background: "var(--card)",
       border: "1px solid var(--line)",
@@ -4460,11 +4962,13 @@ function SalesTable({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: 680
+      minWidth: compare ? 830 : 640
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      ...salesGrid,
+      display: "grid",
+      gridTemplateColumns: cols,
+      gap: 10,
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       fontSize: 11,
@@ -4473,25 +4977,32 @@ function SalesTable({
       textTransform: "uppercase",
       color: "var(--muted)"
     }
-  }, head("Name", "name", "left"), SALES_SPANS.map(([key, label]) => /*#__PURE__*/React.createElement(React.Fragment, {
-    key: key
-  }, head(label, key, "right")))), !shown.length && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null, "#"), head("Name", "name", "left"), /*#__PURE__*/React.createElement("div", {
+    title: "Pieces per month"
+  }, "Last 12 months"), head("Pieces", "pieces", "right"), compare && head("Change", "delta", "right", `Difference in pieces against the ${against}`), head("Value", "value", "right"), compare && head("Value ±", "valueChange", "right", `Change in value against the ${against}`)), !shown.length && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "30px 16px",
       textAlign: "center",
       color: "var(--muted)",
       fontSize: 14
     }
-  }, "No items match."), shown.map(r => /*#__PURE__*/React.createElement("div", {
+  }, "Nothing sold in these dates."), shown.map((r, i) => /*#__PURE__*/React.createElement("div", {
     key: r.id,
     style: {
-      ...salesGrid,
+      display: "grid",
+      gridTemplateColumns: cols,
+      gap: 10,
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       alignItems: "center",
       fontSize: 14
     }
   }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "var(--muted)"
+    }
+  }, i + 1), /*#__PURE__*/React.createElement("div", {
     style: {
       minWidth: 0
     }
@@ -4504,8 +5015,11 @@ function SalesTable({
       fontSize: 11.5,
       color: "var(--muted)"
     }
-  }, r.sku)), SALES_SPANS.map(([key]) => /*#__PURE__*/React.createElement("div", {
-    key: key,
+  }, r.sku)), /*#__PURE__*/React.createElement(Sparkline, {
+    series: r.series,
+    months: months,
+    today: today
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "right"
     }
@@ -4513,12 +5027,43 @@ function SalesTable({
     style: {
       fontWeight: 600
     }
-  }, r[key].pieces.toLocaleString("en-IN"), " pcs"), /*#__PURE__*/React.createElement("div", {
+  }, pcs(r.pieces)), compare && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11.5,
       color: "var(--muted)"
     }
-  }, rupees(r[key].value)))))))));
+  }, pcs(r.lastPieces), " before")), compare && (lastYearPartial ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right",
+      color: "var(--muted)"
+    }
+  }, "\u2014") : /*#__PURE__*/React.createElement(ChangeBar, {
+    r: r
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, rupees(r.value)), compare && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, rupees(r.lastValue), " before")), compare && /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, lastYearPartial ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)"
+    }
+  }, "\u2014") : r.valueChange == null ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: "var(--muted)"
+    }
+  }, "new") : /*#__PURE__*/React.createElement(Delta, {
+    pct: r.valueChange
+  })))))));
 }
 
 // Ceramitec's pre-packed sets — single Shopify products, not Zoho items.
@@ -5403,10 +5948,13 @@ function NotesCell({
     }
   });
 }
+
+// sold: that item's sales (null: none in the last year; undefined: not shown)
 function ReorderRow({
   r,
   onSave,
-  showVendor
+  showVendor,
+  sold
 }) {
   // almost everything is in pcs, so the unit is only shown when it isn't
   const u = (r.unit || "").toLowerCase();
@@ -5414,7 +5962,7 @@ function ReorderRow({
   const short = shortOf(r);
   return /*#__PURE__*/React.createElement("div", {
     style: {
-      ...reorderGrid(showVendor),
+      ...reorderGrid(showVendor, sold !== undefined),
       padding: "10px 16px",
       borderBottom: "1px solid var(--line)",
       alignItems: "center",
@@ -5468,7 +6016,18 @@ function ReorderRow({
       fontWeight: 600,
       color: short ? "var(--clay)" : "var(--sage)"
     }
-  }, !r.below ? "—" : short ? `${short}${unit}` : "✓ covered"));
+  }, !r.below ? "—" : short ? `${short}${unit}` : "✓ covered"), sold !== undefined && /*#__PURE__*/React.createElement("div", {
+    style: midCell
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600
+    }
+  }, sold ? sold.year.pieces : 0), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "var(--muted)"
+    }
+  }, sold ? sold.month.pieces : 0, " last month")));
 }
 function Trash({
   trash,
@@ -5676,9 +6235,9 @@ const fmtLeft = ms => {
   return m ? `${h}h ${m}m` : `${h}h`;
 };
 // name · [vendor] · reorder · stock · to receive · expected · notes · short
-const reorderGrid = showVendor => ({
+const reorderGrid = (showVendor, showSold) => ({
   display: "grid",
-  gridTemplateColumns: `minmax(240px,2fr) ${showVendor ? "130px " : ""}90px 100px 110px 120px minmax(160px,1fr) 100px`,
+  gridTemplateColumns: showSold ? `minmax(200px,2fr) ${showVendor ? "130px " : ""}90px 100px 110px 120px minmax(130px,1fr) 100px 100px` : `minmax(240px,2fr) ${showVendor ? "130px " : ""}90px 100px 110px 120px minmax(160px,1fr) 100px`,
   gap: 12
 });
 const midCell = {

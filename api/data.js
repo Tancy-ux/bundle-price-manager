@@ -12,7 +12,7 @@
 
 import { Redis } from "@upstash/redis";
 import { mergeUpserts, mergeTrash, mergeSet } from "../lib/mergeData.js";
-import { applyTeamSave } from "../lib/teamRules.js";
+import { applyTeamSave, keepTeamEdits } from "../lib/teamRules.js";
 import { isAdmin } from "../lib/auth.js";
 
 let _redis;
@@ -66,15 +66,15 @@ export default async function handler(req, res) {
       const prev = (await redis.get(KEY)) || EMPTY;
 
       if (!admin) {
-        const { doc, changed } = applyTeamSave(prev, req.body);
-        if (!changed) return res.status(200).json({ ok: true, data: forTeam(prev) });
+        const { doc, changed, stale } = applyTeamSave(prev, req.body);
+        if (!changed) return res.status(200).json({ ok: true, data: forTeam(prev), stale });
         // at most one backup an hour, so team saves can't push out the rest
         if (await redis.set(TEAM_BACKUP_LOCK, "1", { nx: true, ex: TEAM_BACKUP_EVERY_S })) {
           await redis.lpush(BACKUPS, JSON.stringify({ at: new Date().toISOString(), data: prev }));
           await redis.ltrim(BACKUPS, 0, MAX_BACKUPS - 1);
         }
         await redis.set(KEY, doc);
-        return res.status(200).json({ ok: true, data: forTeam(doc) });
+        return res.status(200).json({ ok: true, data: forTeam(doc), stale });
       }
 
       // rolling backup of the previous version (last 20 kept)
@@ -83,8 +83,8 @@ export default async function handler(req, res) {
 
       const saved = {
         ...prev,
-        products: mergeUpserts(prev.products || [], productsDiff.upserts, productsDiff.deletes),
-        bundles: mergeUpserts(prev.bundles || [], bundlesDiff.upserts, bundlesDiff.deletes),
+        products: mergeUpserts(prev.products || [], keepTeamEdits(prev.products, productsDiff.upserts, "price"), productsDiff.deletes),
+        bundles: mergeUpserts(prev.bundles || [], keepTeamEdits(prev.bundles, bundlesDiff.upserts, "storedPrice"), bundlesDiff.deletes),
         trash: mergeTrash(prev.trash || [], trashDiff?.upserts, trashDiff?.deletes),
         excludedSkus: mergeSet(prev.excludedSkus, excludedSkusDiff?.added, excludedSkusDiff?.removed),
         excludedBundleNames: mergeSet(prev.excludedBundleNames, excludedBundleNamesDiff?.added, excludedBundleNamesDiff?.removed),

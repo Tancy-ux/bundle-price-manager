@@ -31,7 +31,15 @@ if (!j.refresh_token) {
 const envFile = new URL("../.env", import.meta.url);
 const env = fs.readFileSync(envFile, "utf8");
 const line = `ZOHO_REFRESH_TOKEN=${j.refresh_token}`;
-fs.writeFileSync(envFile, env.replace(/^ZOHO_REFRESH_TOKEN=.*$/m, () => line));
+const updated = /^ZOHO_REFRESH_TOKEN=.*$/m.test(env)
+  ? env.replace(/^ZOHO_REFRESH_TOKEN=.*$/m, () => line)
+  : `${env.replace(/\s*$/, "")}\n${line}\n`;
+fs.writeFileSync(envFile, updated);
+if (!fs.readFileSync(envFile, "utf8").includes(line)) {
+  console.error("Couldn't write the token to .env. Add this line by hand:");
+  console.error(line);
+  process.exit(1);
+}
 
 console.log("Saved the new refresh token to .env");
 console.log(`Scopes: ${j.scope}`);

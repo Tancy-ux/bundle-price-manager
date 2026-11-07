@@ -4,16 +4,29 @@
 import { Redis } from "@upstash/redis";
 import { SALES_KEY } from "../lib/zohoSales.js";
 
+let _redis;
+function getRedis() {
+  if (!_redis) {
+    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    _redis = new Redis({ url, token });
+  }
+  return _redis;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
     return res.status(405).json({ error: "method not allowed" });
   }
   try {
-    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-    const redis = new Redis({ url, token });
-    return res.status(200).json((await redis.get(SALES_KEY)) || { rows: [] });
+    const doc = (await getRedis().get(SALES_KEY)) || { rows: [] };
+    // ?rows=1: just the last month / 6 months / year, for the Reorder list
+    if (req.query?.rows) {
+      const { rows, pending, yearComplete, lastSyncAt } = doc;
+      return res.status(200).json({ rows, pending, yearComplete, lastSyncAt });
+    }
+    return res.status(200).json(doc);
   } catch (e) {
     console.error("sales error:", e);
     return res.status(500).json({ error: "sales error", detail: String(e?.message || e) });

@@ -36,7 +36,8 @@
         body: JSON.stringify({ password: document.getElementById("p").value }),
       });
       if (r.ok) return location.replace("/");
-      err.textContent = r.status === 401 ? "Wrong password" : "Couldn't sign in, try again";
+      var j = await r.json().catch(function () { return {}; });
+      err.textContent = j.error || "Couldn't sign in, try again";
     } catch (e) {
       err.textContent = "Couldn't reach the server";
     }

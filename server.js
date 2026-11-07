@@ -196,7 +196,12 @@ app.post("/api/login", (req, res) => {
 // sales per item, written by scripts/zoho-sales.js --local
 app.get("/api/sales", (req, res) => {
   const file = path.join(DATA_DIR, "sales.json");
-  res.json(fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : { rows: [] });
+  const doc = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : { rows: [] };
+  if (req.query.rows) {
+    const { rows, pending, yearComplete, lastSyncAt } = doc;
+    return res.json({ rows, pending, yearComplete, lastSyncAt });
+  }
+  res.json(doc);
 });
 
 app.get("/api/reorder", (req, res) => {
